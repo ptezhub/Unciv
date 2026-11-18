@@ -594,7 +594,15 @@ public class Agent {
         try {
             mapSeed = gi.getTileMap().getMapParameters().getSeed();
         } catch (Throwable ignored) { }
+        String difficulty = null;
+        String speed = null;
+        try {
+            difficulty = gi.getGameParameters().getDifficulty();
+            speed = gi.getGameParameters().getSpeed();
+        } catch (Throwable ignored) { }
         return "{\"turn\":" + gi.getTurns()
+                + ",\"difficulty\":" + (difficulty == null ? "null" : quote(difficulty))
+                + ",\"speed\":" + (speed == null ? "null" : quote(speed))
                 + ",\"seed\":" + mapSeed
                 + ",\"gameId\":" + quote(gi.getGameId())
                 + ",\"civ\":" + quote(c.getCivName())
@@ -1164,6 +1172,10 @@ public class Agent {
             com.unciv.models.stats.Stats st = c.getStats().getStatsForNextTurn();
             gpt = st.getGold(); sci = st.getScience(); cult = st.getCulture(); faith = st.getFaith();
             happiness = c.getStats().getHappiness();
+        } catch (Throwable ignored) { }
+        try {
+            sb.append(",\"difficulty\":").append(quote(gi.getGameParameters().getDifficulty()))
+              .append(",\"speed\":").append(quote(gi.getGameParameters().getSpeed()));
         } catch (Throwable ignored) { }
         sb.append(",\"gold\":").append(gold)
           .append(",\"goldPerTurn\":").append(round1(gpt))

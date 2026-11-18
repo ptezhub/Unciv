@@ -308,7 +308,8 @@ Field lists are exact — no extra fields, no nesting beyond what is shown.
  "units":[{"id":"unit-17","name":"Warrior","x":9,"y":0,"hp":100,"moves":2.0}],
  "stats":{"goldPerTurn":9.0,"sciencePerTurn":14.0,"culturePerTurn":3.0,"faithPerTurn":2.0,
           "productionPerTurn":0.0,"foodPerTurn":0.0,"happiness":4,"unitSupply":7},
- "pendingCaptures":[],"seed":777,"gameId":"1b2c…"}
+ "pendingCaptures":[],"seed":777,"gameId":"1b2c…",
+ "difficulty":"Prince","speed":"Quick"}
 ```
 
 `pendingCaptures` lists cities you have taken but not yet resolved with `capture_city`;
@@ -373,7 +374,7 @@ opened; `ready` means prerequisites are met (culture is a separate question).
 prompt. It aggregates what the client would show:
 
 ```json
-{"turn":42,"civ":"Rome","era":"Classical era",
+{"turn":42,"civ":"Rome","era":"Classical era","difficulty":"Prince","speed":"Quick",
  "gold":310,"goldPerTurn":9.0,"sciencePerTurn":14.0,
  "culture":88,"culturePerTurn":3.0,"cultureForNextPolicy":45,
  "faith":12,"faithPerTurn":2.0,"happiness":4,
