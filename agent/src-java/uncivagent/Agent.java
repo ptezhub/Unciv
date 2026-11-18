@@ -96,6 +96,15 @@ public class Agent {
         game = new UncivGame(true);
         UncivGame.Companion.setCurrent(game);
         game.setSettings(new GameSettings());
+        // 无头环境没有客户端那套 files 初始化，声音/存档辅助会碰 UncivGame.files。
+        // 给一个真实的 UncivFiles 指向当前工作目录，找不到音频文件就静默跳过。
+        try {
+            if (com.badlogic.gdx.Gdx.files != null)
+                game.setFiles(new com.unciv.logic.files.UncivFiles(
+                        com.badlogic.gdx.Gdx.files, null));
+        } catch (Throwable t) {
+            System.out.println("[unciv-agent] files 初始化失败: " + t);
+        }
         RulesetCache.INSTANCE.loadRulesets(true, false);
         System.out.println("[unciv-agent] 规则集加载完成，共 " + RulesetCache.INSTANCE.size() + " 个");
     }
@@ -555,6 +564,19 @@ public class Agent {
             if (!first) sb.append(',');
             first = false;
             HexCoord p = u.getTile().getPosition();
+            StringBuilder promos = new StringBuilder();
+            for (String promo : u.getPromotions().getPromotions()) {
+                if (promos.length() > 0) promos.append(',');
+                promos.append(quote(promo));
+            }
+            StringBuilder ups = new StringBuilder();
+            try {
+                for (com.unciv.logic.map.mapunit.PossibleUpgrade pu : u.getUpgrade().getUpgradesOfKind(false)) {
+                    if (!pu.isShownToPlayer()) continue;
+                    if (ups.length() > 0) ups.append(',');
+                    ups.append(quote(pu.getUpgradedUnit().getName()));
+                }
+            } catch (Throwable ignored) { }
             sb.append("{\"id\":").append(quote("unit-" + v.getId()))
               .append(",\"name\":").append(quote(v.getName()))
               .append(",\"x\":").append(p.getX())
@@ -563,6 +585,14 @@ public class Agent {
               .append(",\"moves\":").append(v.getCurrentMovement())
               .append(",\"maxMoves\":").append(v.getMaxMovement())
               .append(",\"canAttack\":").append(v.canAttack())
+              .append(",\"military\":").append(u.isMilitary())
+              .append(",\"civilian\":").append(u.isCivilian())
+              .append(",\"embarked\":").append(u.isEmbarked())
+              .append(",\"range\":").append(u.getRange())
+              .append(",\"xp\":").append(u.getPromotions().getXP())
+              .append(",\"canPromote\":").append(u.getPromotions().canBePromoted())
+              .append(",\"promotions\":[").append(promos).append(']')
+              .append(",\"canUpgradeTo\":[").append(ups).append(']')
               .append('}');
         }
         return sb.append("]}").toString();
@@ -623,6 +653,7 @@ public class Agent {
             if (queue.length() > 0) queue.append(',');
             queue.append(quote(q));
         }
+        com.unciv.models.stats.Stats stats = target.getCityStats().getCurrentCityStats();
         return "{\"city\":" + quote("city-" + target.getId())
                 + ",\"name\":" + quote(target.getName())
                 + ",\"pop\":" + target.getPopulation().getPopulation()
@@ -631,7 +662,66 @@ public class Agent {
                 + ",\"production\":" + quote(target.getCityConstructions().getCurrentConstruction().getName())
                 + ",\"queue\":[" + queue + "]"
                 + ",\"workedTiles\":" + workedTilesJson(target)
+                + ",\"stats\":{\"food\":" + round1(stats.getFood())
+                + ",\"production\":" + round1(stats.getProduction())
+                + ",\"gold\":" + round1(stats.getGold())
+                + ",\"science\":" + round1(stats.getScience())
+                + ",\"culture\":" + round1(stats.getCulture())
+                + ",\"faith\":" + round1(stats.getFaith())
+                + ",\"happiness\":" + round1(stats.getHappiness()) + "}"
+                + ",\"health\":" + target.getHealth()
+                + ",\"maxHealth\":" + target.getMaxHealth$unciv_core()
+                + ",\"isPuppet\":" + target.isPuppet()
+                + ",\"isCapital\":" + target.isCapital()
+                + ",\"connected\":" + target.isConnectedToCapital()
+                + ",\"avoidGrowth\":" + target.getAvoidGrowth()
+                + ",\"inResistance\":" + target.isInResistance()
+                + ",\"buildings\":" + buildingsJson(gi, target)
+                + ",\"specialists\":" + counterJson(target.getPopulation().getSpecialistAllocations())
+                + ",\"maxSpecialists\":" + counterJson(target.getPopulation().getMaxSpecialists())
+                + ",\"manualSpecialists\":" + target.getManualSpecialists()
+                + ",\"turnsToGrowth\":" + (target.getPopulation().getNumTurnsToNewPopulation() == null
+                        ? "null" : target.getPopulation().getNumTurnsToNewPopulation())
+                + ",\"foodToNextPop\":" + target.getPopulation().getFoodToNextPopulation()
+                + ",\"religion\":{\"majority\":" + (target.getReligion().getMajorityReligionName() == null
+                        ? "null" : quote(target.getReligion().getMajorityReligionName()))
+                + ",\"holyCityOf\":" + (target.getReligion().getReligionThisIsTheHolyCityOf() == null
+                        ? "null" : quote(target.getReligion().getReligionThisIsTheHolyCityOf())) + "}"
                 + ",\"buildable\":[" + buildable + "]}";
+    }
+
+    private static String round1(float v) {
+        return String.valueOf(Math.round(v * 10f) / 10f);
+    }
+
+    private static String counterJson(com.unciv.models.Counter<String> c) {
+        StringBuilder sb = new StringBuilder("{");
+        boolean first = true;
+        for (Map.Entry<String, Integer> e : c.entrySet()) {
+            if (e.getValue() == null || e.getValue() <= 0) continue;
+            if (!first) sb.append(',');
+            first = false;
+            sb.append(quote(e.getKey())).append(':').append(e.getValue());
+        }
+        return sb.append('}').toString();
+    }
+
+    private static String buildingsJson(GameInfo gi, City city) {
+        StringBuilder sb = new StringBuilder("[");
+        boolean first = true;
+        for (String name : gi.getRuleset().getBuildings().keySet()) {
+            boolean built;
+            try {
+                built = city.getCityConstructions().isBuilt(name);
+            } catch (Throwable e) {
+                continue;
+            }
+            if (!built) continue;
+            if (!first) sb.append(',');
+            first = false;
+            sb.append(quote(name));
+        }
+        return sb.append(']').toString();
     }
 
     private static String workedTilesJson(City city) {

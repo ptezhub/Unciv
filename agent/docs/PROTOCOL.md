@@ -137,6 +137,8 @@ Event types and their fields:
 | `nuke` | `unit`, `at:[x,y]` |
 | `unit_upgraded` | `unit`, `from`, `to`, `goldCost` |
 | `spy_moved` | `spy`, `to` |
+| `specialists_set` | `city`, `specialists:{name:count}` |
+| `city_annexed` | `city`, `name` |
 | `turn_advanced` | `from`, `to`, `currentCiv` |
 
 `turn_advanced` is emitted whenever `end_turn` was accepted, including when the host is still
@@ -175,7 +177,7 @@ candidates are there to be retried.
 
 ## Tool table
 
-37 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
+39 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
 drift from the code.
 
 Read (`kind: read`) — these are not intents; call the HTTP route or the MCP tool:
@@ -210,7 +212,7 @@ Act (`kind: act`):
 | `promote_unit` | `unit`, `promotion` | must be in the unit's available promotions |
 | `unit_action` | `unit`, `action`, `id` | a `UnitActionType` name: `Fortify`, `Sleep`, `Explore`, `Automate`, `Pillage`, `CreateImprovement`, …; `id` selects the concrete target (improvement name, unique) |
 | `set_city_focus` | `city`, `focus` | a `CityFocus` name |
-| `purchase_construction` | `city`, `item` | gold purchase |
+| `purchase_construction` | `city`, `item`, `currency?` | `Gold` (default) or `Faith`. Price and eligibility come from the engine (`getStatBuyCost` + `isConstructionPurchaseAllowed`), so an unaffordable buy is rejected instead of driving gold negative |
 | `declare_war` | `civ` | must have met them and be allowed to declare |
 | `make_peace` | `civ` | must currently be at war |
 | `adopt_policy` | `policy` | must not be adopted already |
@@ -223,6 +225,8 @@ Act (`kind: act`):
 | `nuke` | `unit`, `x`, `y` | unit must be a nuclear weapon; target must pass `Nuke.mayUseNuke` (range, war status) |
 | `upgrade_unit` | `unit`, `to?` | `to` is required when several upgrades are listed |
 | `spy_move` | `spy`, `city?` | `spy` is a name or an index; `city` omitted or `hideout` recalls the spy |
+| `set_city_specialists` | `city`, `specialists:{name:count}` | switches the city to manual specialists; names omitted from the object are cleared, `{}` clears all. Free population is rebalanced immediately |
+| `annex_city` | `city` | turns one of your puppets into a directly controlled city |
 
 Turn (`kind: turn`):
 
@@ -242,7 +246,7 @@ Names are exact. `UNKNOWN_ID` returns up to 8 substring matches, so `Monu` sugge
 | `initialize` | `protocolVersion: "2025-06-18"`, `capabilities.tools`, `serverInfo: {name:"unciv-agent",version:"0.1.0"}` |
 | `notifications/initialized` | HTTP `202`, empty body |
 | `ping` | `{}` |
-| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 37 entries |
+| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 39 entries |
 | `tools/call` | `{content:[{type:"text",text:"<tool JSON as a string>"}],isError:bool}` |
 | anything else | `-32601 Method not found` |
 
@@ -289,8 +293,10 @@ Field lists are exact — no extra fields, no nesting beyond what is shown.
  "units":[{"id":"unit-17","name":"Warrior","x":9,"y":0,"hp":100,"moves":2.0}]}
 ```
 
-`GET /units` — `{"units":[{id,name,x,y,hp,moves,maxMoves,canAttack}]}`. `canAttack` is the
-engine's own predicate; it does not mean a target is in range.
+`GET /units` — `{"units":[{id,name,x,y,hp,moves,maxMoves,canAttack,military,civilian,embarked,range,xp,canPromote,promotions:[…],canUpgradeTo:[…]}]}`.
+`canAttack` is the engine's own predicate; it does not mean a target is in range.
+`canUpgradeTo` lists only upgrades whose requirements are met right now, i.e. exactly what
+`upgrade_unit` would accept.
 
 `GET /cities` — `{"cities":[{id,name,pop,x,y,production}]}`.
 
@@ -299,7 +305,15 @@ engine's own predicate; it does not mean a target is in range.
 ```json
 {"city":"city-3f2a…","name":"Rome","pop":4,"at":[8,-1],"focus":"Default",
  "production":"Monument","queue":["Monument","Warrior"],
- "workedTiles":[[7,-1],[9,-1]],"buildable":["Monument","Warrior",…]}
+ "workedTiles":[[7,-1],[9,-1]],
+ "stats":{"food":6.0,"production":8.0,"gold":4.0,"science":7.0,"culture":2.0,"faith":0.0,"happiness":0.0},
+ "health":200,"maxHealth":200,"isPuppet":false,"isCapital":true,"connected":true,
+ "avoidGrowth":false,"inResistance":false,
+ "buildings":["Palace","Monument","Library"],
+ "specialists":{"Scientist":1},"maxSpecialists":{"Scientist":2},"manualSpecialists":true,
+ "turnsToGrowth":7,"foodToNextPop":24,
+ "religion":{"majority":"Buddhism","holyCityOf":"Buddhism"},
+ "buildable":["Monument","Warrior",…]}
 ```
 
 `buildable` is capped at 40 entries, filtered by `canAddToQueue`. Unknown id →
@@ -375,6 +389,9 @@ Clients should therefore treat "`turn_advanced` with `from == to`" as "waiting",
 
 ## Known gaps
 
+- City capture still goes through the engine's automatic decision (headless has no
+  `worldScreen`, so `automateCityConquer` runs). `annex_city` can only convert a puppet you
+  already own; there is no way to choose annex/puppet/raze at the moment of capture.
 - Espionage exposes movement and status only: there is no way to start a coup, rig an
   election, or pick a specific tech to steal — the engine chains those automatically after a
   spy establishes a network.

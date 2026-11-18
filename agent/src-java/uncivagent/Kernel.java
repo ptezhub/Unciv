@@ -106,8 +106,8 @@ public final class Kernel {
                 "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}", "read");
         tool("set_city_focus", "设置城市人口分配焦点。",
                 "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"focus\":{\"type\":\"string\"}},\"required\":[\"city\",\"focus\"]}", "act");
-        tool("purchase_construction", "用金币购买城市建筑或单位。",
-                "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"item\":{\"type\":\"string\"}},\"required\":[\"city\",\"item\"]}", "act");
+        tool("purchase_construction", "用金币或信仰购买城市建筑或单位。",
+                "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"item\":{\"type\":\"string\"},\"currency\":{\"type\":\"string\"}},\"required\":[\"city\",\"item\"]}", "act");
         tool("get_victory_progress", "读取胜利条件与当前进度。", "{\"type\":\"object\",\"properties\":{}}", "read");
         tool("get_tile", "读取单个地块的详情。",
                 "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"}},\"required\":[\"x\",\"y\"]}", "read");
@@ -147,6 +147,10 @@ public final class Kernel {
                 "{\"type\":\"object\",\"properties\":{}}", "read");
         tool("spy_move", "把间谍派到某个城市（别人城里会自动建网并开始偷科技），city 留空回总部。",
                 "{\"type\":\"object\",\"properties\":{\"spy\":{\"type\":\"string\"},\"city\":{\"type\":\"string\"}},\"required\":[\"spy\"]}", "act");
+        tool("set_city_specialists", "手动分配城市专家，如 {\"Scientist\":1}；会切到手动模式。",
+                "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"specialists\":{\"type\":\"object\"}},\"required\":[\"city\",\"specialists\"]}", "act");
+        tool("annex_city", "把傀儡城转为直辖。",
+                "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}", "act");
     }
 
     public static Map<String, Tool> tools() { return TOOLS; }
@@ -209,6 +213,8 @@ public final class Kernel {
                 case "nuke": applyNuke(gameInfo, actor, target, params, events); break;
                 case "upgrade_unit": applyUpgradeUnit(gameInfo, actor, target, params, events); break;
                 case "spy_move": applySpyMove(gameInfo, actor, params, events); break;
+                case "set_city_specialists": applySetSpecialists(gameInfo, actor, target, params, events); break;
+                case "annex_city": applyAnnexCity(gameInfo, actor, target, params, events); break;
                 default: return error("UNKNOWN_ACTION", "动作未实现: " + type, null);
             }
         } catch (Fail f) {
@@ -493,16 +499,58 @@ public final class Kernel {
             throw new Fail("UNKNOWN_ID", "没有这个可购买项: " + item, candidates);
         }
 
+        String currency = Json.str(params, "currency");
+        com.unciv.models.stats.Stat stat = com.unciv.models.stats.Stat.Gold;
+        if (currency != null) {
+            try {
+                stat = com.unciv.models.stats.Stat.valueOf(currency);
+            } catch (IllegalArgumentException e) {
+                throw new Fail("UNKNOWN_ID", "没有这种货币: " + currency,
+                        java.util.Arrays.asList("Gold", "Faith"));
+            }
+            if (stat != com.unciv.models.stats.Stat.Gold && stat != com.unciv.models.stats.Stat.Faith)
+                throw new Fail("NOT_AVAILABLE", "只能用 Gold 或 Faith 购买");
+        }
+
+        // purchaseConstruction 自己不做可购买性检查（UI 是按钮禁用），这里先按引擎规则验一遍
+        com.unciv.models.ruleset.INonPerpetualConstruction buyable = null;
+        Integer price = null;
+        try {
+            com.unciv.models.ruleset.IConstruction con = city.getCityConstructions().getConstruction$unciv_core(item);
+            if (con instanceof com.unciv.models.ruleset.INonPerpetualConstruction) {
+                buyable = (com.unciv.models.ruleset.INonPerpetualConstruction) con;
+                price = buyable.getStatBuyCost(city, stat);
+            }
+        } catch (Throwable ignored) { }
+        if (buyable == null) throw new Fail("NOT_AVAILABLE", item + " 不能购买（不是可购买的项目）");
+        if (price == null) throw new Fail("NOT_AVAILABLE", item + " 不能用 " + stat.name() + " 购买");
+        boolean purchasable = true;
+        try {
+            purchasable = buyable.isPurchasable(city.getCityConstructions());
+        } catch (Throwable ignored) { }
+        if (!purchasable)
+            throw new Fail("NOT_AVAILABLE", item + " 现在买不了：缺前置（科技/建筑）");
+        if (!city.getCityConstructions().isConstructionPurchaseAllowed(buyable, stat, price)) {
+            int have = stat == com.unciv.models.stats.Stat.Faith
+                    ? actor.getReligionManager().getStoredFaith() : actor.getGold();
+            if (have < price)
+                throw new Fail("NOT_AVAILABLE", "买不起 " + item + "：要 " + price + " " + stat.name()
+                        + "，现有 " + have);
+            throw new Fail("NOT_AVAILABLE", "现在不能买 " + item
+                    + "：傀儡城 / 抵抗中 / 城里放不下新单位");
+        }
+
         boolean ok;
         try {
-            ok = city.getCityConstructions().purchaseConstruction(item, 1, false,
-                    com.unciv.models.stats.Stat.Gold, null);
+            ok = city.getCityConstructions().purchaseConstruction(buyable, -1, false, stat, null);
         } catch (Throwable e) {
             throw new Fail("NOT_AVAILABLE", "购买失败: " + e.getMessage());
         }
-        if (!ok) throw new Fail("NOT_AVAILABLE", "买不起或不能买: " + item);
+        if (!ok) throw new Fail("NOT_AVAILABLE", "购买没有生效: " + item);
         events.add("{\"type\":\"purchased\",\"city\":" + q("city-" + city.getId())
-                + ",\"item\":" + q(item) + ",\"goldLeft\":" + actor.getGold() + "}");
+                + ",\"item\":" + q(item) + ",\"currency\":" + q(stat.name())
+                + ",\"goldLeft\":" + actor.getGold()
+                + ",\"faithLeft\":" + actor.getReligionManager().getStoredFaith() + "}");
     }
 
     private static Civilization requireOtherCiv(GameInfo gi, Civilization me, String nameOrId) {
@@ -1031,6 +1079,83 @@ public final class Kernel {
         events.add("{\"type\":\"spy_moved\",\"spy\":" + q(spy.getName()) + ",\"to\":" + q(dest.getName()) + "}");
     }
 
+    // ---------- 专家分配 ----------
+
+    private static void applySetSpecialists(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
+        City city = requireOwnCity(gi, actor, target);
+        if (!params.containsKey("specialists"))
+            throw new Fail("BAD_PARAMS", "需要 specialists 对象，如 {\"Scientist\":1}；传 {} 表示全部取消");
+        Map<String, Object> want = Json.obj(params.get("specialists"));
+
+        Ruleset rs = gi.getRuleset();
+        Counter<String> allocations = city.getPopulation().getSpecialistAllocations();
+        Counter<String> max = city.getPopulation().getMaxSpecialists();
+
+        Map<String, Integer> applied = new LinkedHashMap<>();
+        int totalAfter = 0;
+        for (Map.Entry<String, Object> e : want.entrySet()) {
+            String name = e.getKey();
+            Integer count = e.getValue() instanceof Number ? ((Number) e.getValue()).intValue() : null;
+            if (count == null) throw new Fail("BAD_PARAMS", name + " 的数量必须是整数");
+            if (!rs.getSpecialists().containsKey(name)) {
+                List<String> cand = new ArrayList<>(rs.getSpecialists().keySet());
+                throw new Fail("UNKNOWN_ID", "没有这个专家: " + name, cand);
+            }
+            if (count < 0) throw new Fail("BAD_PARAMS", name + " 不能是负数");
+            int cap = max.containsKey(name) ? max.get(name) : 0;
+            if (count > cap)
+                throw new Fail("NOT_AVAILABLE", city.getName() + " 最多只能有 " + cap + " 个 " + name);
+            applied.put(name, count);
+            totalAfter += count;
+        }
+        int pop = city.getPopulation().getPopulation();
+        if (totalAfter > pop)
+            throw new Fail("NOT_AVAILABLE", "人口只有 " + pop + "，专家加起来会到 " + totalAfter);
+
+        // 名单里没提到的专家一律清零，传 {} 就是全部取消
+        for (String name : new ArrayList<>(allocations.keySet())) {
+            if (applied.containsKey(name)) continue;
+            int cur = allocations.get(name);
+            if (cur != 0) allocations.add(name, -cur);
+        }
+        for (Map.Entry<String, Integer> e : applied.entrySet()) {
+            int cur = allocations.containsKey(e.getKey()) ? allocations.get(e.getKey()) : 0;
+            int delta = e.getValue() - cur;
+            if (delta != 0) allocations.add(e.getKey(), delta);
+        }
+        city.setManualSpecialists(true);
+        // 专家占的是人口，负的自由人口会让回合开始时乱分配，这里立刻把最差的地块放掉
+        try {
+            int free = city.getPopulation().getFreePopulation();
+            if (free < 0) city.getPopulation().unassignExtraPopulation();
+            else if (free > 0) city.getPopulation().autoAssignPopulation$unciv_core();
+            city.getCityStats().update(null, true, true, true);
+        } catch (Throwable ignored) { }
+
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, Integer> e : allocations.entrySet()) {
+            if (e.getValue() <= 0) continue;
+            if (sb.length() > 0) sb.append(',');
+            sb.append(q(e.getKey())).append(':').append(e.getValue());
+        }
+        events.add("{\"type\":\"specialists_set\",\"city\":" + q("city-" + city.getId())
+                + ",\"specialists\":{" + sb + "}}");
+    }
+
+    // ---------- 傀儡转直辖 ----------
+
+    private static void applyAnnexCity(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
+        City city = requireOwnCity(gi, actor, target);
+        if (!city.isPuppet()) throw new Fail("NOT_AVAILABLE", city.getName() + " 不是傀儡城，已经是直辖");
+        try {
+            city.annexCity();
+        } catch (Throwable e) {
+            throw new Fail("NOT_AVAILABLE", "直辖失败: " + e.getMessage());
+        }
+        events.add("{\"type\":\"city_annexed\",\"city\":" + q("city-" + city.getId())
+                + ",\"name\":" + q(city.getName()) + "}");
+    }
+
     // ---------- 对象解析 ----------
 
     private static MapUnit requireOwnUnit(GameInfo gi, Civilization actor, String target) {
@@ -1197,6 +1322,8 @@ public final class Kernel {
             case "nuke":
             case "upgrade_unit":
             case "spy_move":
+            case "set_city_specialists":
+            case "annex_city":
             case "end_turn": {
                 StringBuilder sb = new StringBuilder("{\"type\":").append(q(name));
                 Map<String, Object> rest = new LinkedHashMap<>(args);

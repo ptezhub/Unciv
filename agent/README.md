@@ -82,7 +82,7 @@ Full route list, intent schema, error codes and MCP methods: [docs/PROTOCOL.md](
 
 ## Differences from upstream
 
-Three changes, on branch `agent-host`:
+Four changes, on branch `agent-host`:
 
 1. **`settings.gradle.kts`** — adds `"agent"` to `include(...)`.
 2. **`core/src/com/unciv/logic/map/mapunit/actions/UnitActions.kt`** — two `GUI.isWorldLoaded()`
@@ -90,7 +90,11 @@ Three changes, on branch `agent-host`:
    headless host threw NPE before the action list was complete; `addSkipAction` calls
    `switchToNextUnit()`, which is pure UI navigation. Both are no-ops in the desktop and
    Android clients, where the world screen exists whenever those actions are reachable.
-3. **`agent/`** — this module, plus its `.gitignore` entries.
+3. **`core/src/com/unciv/ui/audio/SoundPlayer.kt`** — two `Gdx.audio == null` guards. A headless
+   host has no audio backend, and any unique that plays a sound (ancient ruins, promotions,
+   era changes) threw while the action was being applied — `POST /new` could fail outright if a
+   starting unit walked onto a ruin. The guards make sound a no-op where there is no backend.
+4. **`agent/`** — this module, plus its `.gitignore` entries.
 
 Nothing else in `core` is touched. The host runs on the unmodified upstream game logic, so a
 save produced here is an ordinary Unciv save.
@@ -103,10 +107,12 @@ git fetch upstream master
 git rebase upstream/master
 ```
 
-Two commits are expected to conflict, and both are small:
+Three commits are expected to conflict, and all are small:
 
 - `settings.gradle.kts`: keep `"agent"` in the `include(...)` list, and re-check whether
   upstream added modules of its own.
+- `SoundPlayer.kt`: re-apply the two `Gdx.audio == null` guards; they sit at the top of
+  `get()` and inside `Preloader.preload()`.
 - `UnitActions.kt`: re-apply the two guards if upstream rewrote the surrounding functions.
   Re-read the code before resolving — the guards exist because of a call into `GUI`, not
   because of line numbers. If upstream ever grows a proper headless path, drop them.

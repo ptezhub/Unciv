@@ -124,6 +124,9 @@ object SoundPlayer {
      * @return `null` if file cannot be found, a [GetSoundResult] otherwise
      */
     fun get(sound: UncivSound): GetSoundResult? {
+        // Headless hosts have no audio backend - Gdx.audio is null there.
+        // Without this guard any unique that plays a sound (ruins, promotions) throws and aborts the action.
+        if (Gdx.audio == null) return null
         checkCache()
 
         // Look for cached sound
@@ -255,6 +258,7 @@ object SoundPlayer {
         }
 
         private suspend fun CoroutineScope.preload() {
+            if (Gdx.audio == null) return
             for (sound in UncivSound.getPreloadList()) {
                 delay(10L)
                 if (!isActive) break
