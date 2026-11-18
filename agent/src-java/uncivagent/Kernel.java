@@ -741,6 +741,11 @@ public final class Kernel {
             if (item == null || item.isEmpty() || item.equals("Nothing")) idleCities++;
         }
         if (idleCities > 0) warnings.add(idleCities + " 座城没有在生产任何东西");
+        try {
+            String researching = actor.getTech().currentTechnologyName();
+            if (researching == null || researching.isEmpty())
+                warnings.add("没有在研究的科技，这回合的科研会浪费");
+        } catch (Throwable ignored) { }
         int pending = 0;
         for (com.unciv.logic.civilization.PopupAlert a : actor.getPopupAlerts())
             if (a.getType() == com.unciv.logic.civilization.AlertType.CityConquered) pending++;
