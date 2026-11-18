@@ -97,6 +97,9 @@ snake_case tool names work. New clients should call `/intent`.
 - `type` — resolved against the tool table. A `read` tool is rejected with `NOT_AN_ACTION`.
 - `target` — the primary object. Units and cities are looked up inside the acting
   civilization; someone else's unit yields `NOT_YOUR_UNIT` plus the caller's own ids.
+  Civilization actions (`declare_war`, `make_peace`, `propose_trade`, `respond_trade`,
+  `gift_city_state`, `pledge_protect`) accept the civilization name in `target` as well as in
+  `params.civ`.
 - `params` — action-specific, see the [tool table](#tool-table).
 
 There is no `actor` field. The acting civilization comes from the token, never from the body.
@@ -184,7 +187,7 @@ candidates are there to be retried.
 
 ## Tool table
 
-40 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
+41 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
 drift from the code.
 
 Read (`kind: read`) — these are not intents; call the HTTP route or the MCP tool:
@@ -202,6 +205,7 @@ Read (`kind: read`) — these are not intents; call the HTTP route or the MCP to
 | `get_victory_progress` | — | MCP only |
 | `get_tile` | `x`, `y` | `GET /tile?x&y` |
 | `get_trade_offers` | `civ` (optional) | `GET /trade?civ` |
+| `get_techs` | — | `GET /techs` |
 | `get_religion` | — | `GET /religion` |
 | `get_city_states` | — | `GET /citystates` |
 | `get_spies` | — | `GET /spies` |
@@ -210,9 +214,9 @@ Act (`kind: act`):
 
 | Tool | Params | Notes |
 |---|---|---|
-| `move_unit` | `unit`, `x`, `y` | moves toward the tile: exactly if it is reachable this turn, otherwise as far as the path allows. The event carries `arrived` and `tilesLeft`, so call it again next turn to keep walking |
+| `move_unit` | `unit`, `x`, `y` | moves toward the tile: exactly if it is reachable this turn, otherwise as far as the path allows. The event carries `arrived` and `tilesLeft`, so call it again next turn to keep walking. A tile the unit can never reach is `ILLEGAL_TARGET`; no movement left is `NOT_AVAILABLE` |
 | `found_city` | `unit` | settler must be able to found here |
-| `set_city_production` | `city`, `item`, `count` | name must be in the ruleset; reverts on failure; `count>1` enqueues that many so the city does not fall back to `Nothing` |
+| `set_city_production` | `city`, `item`, `count`, `mode` | `mode` defaults to `replace` (clears the queue first); `append` keeps what is already queued. The event echoes the engine's real queue, so `queued` is never a guess |
 | `set_research` | `tech` | replaces the research queue with one tech |
 | `attack` | `unit`, `x`, `y` | melee/ranged; target must be reachable this turn |
 | `bombard` | `unit`, `x`, `y` | ranged only, unit stays put |
@@ -254,7 +258,7 @@ Names are exact. `UNKNOWN_ID` returns up to 8 substring matches, so `Monu` sugge
 | `initialize` | `protocolVersion: "2025-06-18"`, `capabilities.tools`, `serverInfo: {name:"unciv-agent",version:"0.1.0"}` |
 | `notifications/initialized` | HTTP `202`, empty body |
 | `ping` | `{}` |
-| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 40 entries |
+| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 41 entries |
 | `tools/call` | `{content:[{type:"text",text:"<tool JSON as a string>"}],isError:bool}` |
 | anything else | `-32601 Method not found` |
 
@@ -354,12 +358,20 @@ owning city for every tile in its territory, which is not what an attacker wants
 `GET /events?limit` — `limit` defaults to 20, clamped to `1..200`; the newest `N` are returned:
 `{"total":N,"events":[{category,text}]}`. `category` is a `Notification.Category` name.
 
-`GET /diplomacy` — `{"me":"Rome","known":[{civ,atWar,canDeclareWar}]}`. Only met
+`GET /diplomacy` — `{"me":"Rome","known":[{civ,isCityState,atWar,canDeclareWar}]}`. Only met
 civilizations appear; the acting civilization is excluded.
 
-`GET /policies` — `{"adopted":[…],"adoptableBranches":[…]}`.
+`GET /policies` — `{"adopted":[…],"culture":N,"cultureNeededForNextPolicy":M,"canAdoptPolicy":bool,"adoptableBranches":[…],"tree":[{branch,policies:[{name,adopted,requires,ready}]}]}`.
+`tree` covers every branch in the ruleset, so sub-policies are visible before the branch is
+opened; `ready` means prerequisites are met (culture is a separate question).
 
-`GET /trade?civ` — `{"pending":[{civ,give:[offer],want:[offer]}]}`; with `civ` also
+`GET /techs` — `{"researching","sciencePerTurn","available":[{name,cost,turns}]}`. Only techs
+whose prerequisites are satisfied are listed; `turns` is `null` while science output is zero.
+
+`GET /tile?x&y` — the tile plus `yields:{food,production,gold,science,culture,faith}` for the
+acting civilization, so worked-tile changes can be checked against real numbers.
+
+`GET /trade?civ` — `{"pending":[{civ,proposedByMe,give:[offer],want:[offer]}]}`; with `civ` also
 `"with"`, `"youCanGive"`, `"theyCanGive"`. `give` is what the other side hands over, `want`
 is what they ask for. An offer is `{name,type,amount,duration}`; `duration` is `-1` for
 one-shot items. Gold entries carry the whole treasury as `amount` — clamp it yourself.

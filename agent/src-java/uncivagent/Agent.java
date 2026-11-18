@@ -145,6 +145,9 @@ public class Agent {
                 }
             } catch (IOException ignored) { }
         }
+        try {
+            gi.getCurrentPlayerCiv().updateStatsForNextTurn();
+        } catch (Throwable ignored) { }
         System.out.println("[unciv-agent] 载入存档 " + path + " 回合 " + gi.getTurns());
     }
 
@@ -304,6 +307,7 @@ public class Agent {
             if (path.equals("/policies")) { send(ex, 200, policiesJson(need(), actor)); return; }
             if (path.equals("/trade")) { send(ex, 200, tradeOffersJson(need(), actor, query(ex, "civ"))); return; }
             if (path.equals("/religion")) { send(ex, 200, religionJson(need(), actor)); return; }
+            if (path.equals("/techs")) { send(ex, 200, techsJson(need(), actor)); return; }
             if (path.equals("/citystates")) { send(ex, 200, cityStatesJson(need(), actor)); return; }
             if (path.equals("/spies")) { send(ex, 200, spiesJson(need(), actor)); return; }
             if (path.equals("/tile")) {
@@ -412,6 +416,7 @@ public class Agent {
                 || path.equals("/cities") || path.equals("/map") || path.equals("/events")
                 || path.equals("/diplomacy") || path.equals("/policies") || path.equals("/trade")
                 || path.equals("/religion") || path.equals("/citystates") || path.equals("/spies")
+                || path.equals("/techs")
                 || path.equals("/tile")
                 || path.startsWith("/city/") || path.equals("/actions")
                 || path.equals("/act") || path.equals("/move") || path.equals("/endturn");
@@ -741,6 +746,20 @@ public class Agent {
                 + ",\"buildable\":[" + buildable + "]}";
     }
 
+    private static String tileYields(Tile t, Civilization c) {
+        try {
+            com.unciv.models.stats.Stats st = new com.unciv.logic.map.tile.TileStatFunctions(t).getTileStats(c);
+            return "{\"food\":" + round1(st.getFood())
+                    + ",\"production\":" + round1(st.getProduction())
+                    + ",\"gold\":" + round1(st.getGold())
+                    + ",\"science\":" + round1(st.getScience())
+                    + ",\"culture\":" + round1(st.getCulture())
+                    + ",\"faith\":" + round1(st.getFaith()) + "}";
+        } catch (Throwable e) {
+            return "null";
+        }
+    }
+
     private static String civStatsJson(Civilization c) {
         StringBuilder sb = new StringBuilder();
         try {
@@ -870,6 +889,12 @@ public class Agent {
                   .append(",\"y\":").append(t.getPosition().getY())
                   .append(",\"terrain\":").append(quote(t.baseTerrain))
                   .append(",\"visible\":").append(t.isVisible(c));
+                StringBuilder mf = new StringBuilder();
+                for (String f : t.getTerrainFeatures()) {
+                    if (mf.length() > 0) mf.append(',');
+                    mf.append(quote(f));
+                }
+                sb.append(",\"features\":[").append(mf).append(']');
                 String res = t.getResource();
                 if (res != null) sb.append(",\"resource\":").append(quote(res));
                 Civilization owner = t.getOwner();
@@ -963,6 +988,7 @@ public class Agent {
                 + ",\"visible\":" + t.isVisible(c)
                 + ",\"resource\":" + (t.getResource() == null ? "null" : quote(t.getResource()))
                 + ",\"improvement\":" + (t.getImprovement() == null ? "null" : quote(t.getImprovement()))
+                + ",\"yields\":" + tileYields(t, c)
                 + ",\"city\":" + cityJson
                 + "}";
     }
@@ -978,6 +1004,7 @@ public class Agent {
             if (!first) sb.append(',');
             first = false;
             sb.append("{\"civ\":").append(quote(other.getCivName()))
+              .append(",\"isCityState\":").append(other.isCityState())
               .append(",\"atWar\":").append(c.isAtWarWith(other))
               .append(",\"canDeclareWar\":").append(dm != null && dm.canDeclareWar())
               .append('}');
@@ -992,11 +1019,59 @@ public class Agent {
             adopted.append(quote(p));
         }
         StringBuilder branches = new StringBuilder();
-        for (com.unciv.models.ruleset.PolicyBranch b : c.getPolicies().getAdoptableBranches()) {
-            if (branches.length() > 0) branches.append(',');
-            branches.append(quote(b.getName()));
+        StringBuilder tree = new StringBuilder();
+        boolean firstBranch = true;
+        try {
+            for (com.unciv.models.ruleset.PolicyBranch b : c.getPolicies().getAdoptableBranches()) {
+                if (branches.length() > 0) branches.append(',');
+                branches.append(quote(b.getName()));
+            }
+            for (com.unciv.models.ruleset.PolicyBranch b : gi.getRuleset().getPolicyBranches().values()) {
+                if (!firstBranch) tree.append(',');
+                firstBranch = false;
+                tree.append("{\"branch\":").append(quote(b.getName())).append(",\"policies\":[");
+                boolean firstPolicy = true;
+                for (com.unciv.models.ruleset.Policy p : b.getPolicies()) {
+                    if (!firstPolicy) tree.append(',');
+                    firstPolicy = false;
+                    boolean isAdopted = c.getPolicies().isAdopted(p.getName());
+                    boolean requiresMet = true;
+                    for (String req : p.getRequires())
+                        if (!c.getPolicies().isAdopted(req)) requiresMet = false;
+                    tree.append("{\"name\":").append(quote(p.getName()))
+                        .append(",\"adopted\":").append(isAdopted)
+                        .append(",\"requires\":[").append(joinQuoted(p.getRequires())).append(']')
+                        .append(",\"ready\":").append(!isAdopted && requiresMet)
+                        .append('}');
+                }
+                tree.append("]}");
+            }
+        } catch (Throwable ignored) { }
+        int culture = 0;
+        int nextCost = 0;
+        try {
+            culture = c.getPolicies().getCultureNeededForNextPolicy();  // 其实是"还差多少"
+            nextCost = culture;
+        } catch (Throwable ignored) { }
+        long stored = 0;
+        try {
+            stored = c.getPolicies().getStoredCulture();
+        } catch (Throwable ignored) { }
+        return "{\"adopted\":[" + adopted + "]"
+                + ",\"culture\":" + stored
+                + ",\"cultureNeededForNextPolicy\":" + nextCost
+                + ",\"canAdoptPolicy\":" + c.getPolicies().canAdoptPolicy()
+                + ",\"adoptableBranches\":[" + branches + "]"
+                + ",\"tree\":[" + tree + "]}";
+    }
+
+    static String joinQuoted(java.util.Collection<String> values) {
+        StringBuilder sb = new StringBuilder();
+        for (String v : values) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(quote(v));
         }
-        return "{\"adopted\":[" + adopted + "],\"adoptableBranches\":[" + branches + "]}";
+        return sb.toString();
     }
 
     static String tradeOffersJson(GameInfo gi, Civilization c, String withCiv) {
@@ -1005,6 +1080,7 @@ public class Agent {
             Civilization from = gi.getCivilization(r.getRequestingCiv());
             if (pending.length() > 0) pending.append(',');
             pending.append("{\"civ\":").append(quote(from == null ? r.getRequestingCiv() : from.getCivName()))
+                   .append(",\"proposedByMe\":").append(c.getCivID().equals(r.getRequestingCiv()))
                    .append(",\"give\":").append(Kernel.offersJson(r.getTrade().getTheirOffers()))
                    .append(",\"want\":").append(Kernel.offersJson(r.getTrade().getOurOffers()))
                    .append('}');
@@ -1025,6 +1101,29 @@ public class Agent {
               .append(",\"theyCanGive\":").append(Kernel.offersJson(tl.getTheirAvailableOffers()));
         }
         return sb.append('}').toString();
+    }
+
+    static String techsJson(GameInfo gi, Civilization c) {
+        StringBuilder sb = new StringBuilder("{\"researching\":");
+        String cur = c.getTech().currentTechnologyName();
+        sb.append(cur == null || cur.isEmpty() ? "null" : quote(cur));
+        sb.append(",\"sciencePerTurn\":").append(round1(c.getStats().getStatsForNextTurn().getScience()));
+        sb.append(",\"available\":[");
+        boolean first = true;
+        try {
+            for (String name : gi.getRuleset().getTechnologies().keySet()) {
+                if (!c.getTech().canBeResearched(name)) continue;
+                if (!first) sb.append(',');
+                first = false;
+                int cost = c.getTech().costOfTech(name);
+                double perTurn = c.getStats().getStatsForNextTurn().getScience();
+                sb.append("{\"name\":").append(quote(name))
+                  .append(",\"cost\":").append(cost)
+                  .append(",\"turns\":").append(perTurn <= 0.01 ? "null" : String.valueOf((int) Math.ceil(cost / perTurn)))
+                  .append('}');
+            }
+        } catch (Throwable ignored) { }
+        return sb.append("]}").toString();
     }
 
     static String religionJson(GameInfo gi, Civilization c) {
@@ -1260,6 +1359,10 @@ public class Agent {
         game.setGameInfo(gi);
         submitted.clear();
         tokenToCiv.clear();   // 旧 token 不能跨局复用
+        // 第一回合开始前 stats 还是空的，算一次让 /state /techs 一开始就有数
+        try {
+            gi.getCurrentPlayerCiv().updateStatsForNextTurn();
+        } catch (Throwable ignored) { }
         return stateJson(gi, gi.getCurrentPlayerCiv());
     }
 }

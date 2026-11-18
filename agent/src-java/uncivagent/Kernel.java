@@ -127,7 +127,8 @@ public final class Kernel {
                 "{\"type\":\"object\",\"properties\":{\"civ\":{\"type\":\"string\"},\"give\":{\"type\":\"array\"},\"want\":{\"type\":\"array\"}},\"required\":[\"civ\"]}", "act");
         tool("respond_trade", "回应某个文明发来的交易请求：accept 为 true 成交，false 拒绝。",
                 "{\"type\":\"object\",\"properties\":{\"civ\":{\"type\":\"string\"},\"accept\":{\"type\":\"boolean\"},\"index\":{\"type\":\"integer\"}},\"required\":[\"civ\"]}", "act");
-        tool("get_religion", "读取宗教状态：信仰、万神殿/国教、已选与可选的信念。",
+        tool("get_techs", "列出当前可研究的科技、造价和按当前科研速度的回合数。",
+                "{\"type\":\"object\",\"properties\":{}}", "read");        tool("get_religion", "读取宗教状态：信仰、万神殿/国教、已选与可选的信念。",
                 "{\"type\":\"object\",\"properties\":{}}", "read");
         tool("choose_beliefs", "选信念：万神殿、立国教（带 unit 用大先知）或强化宗教。beliefs 是信念名数组。",
                 "{\"type\":\"object\",\"properties\":{\"unit\":{\"type\":\"string\"},\"beliefs\":{\"type\":\"array\"},\"name\":{\"type\":\"string\"},\"displayName\":{\"type\":\"string\"}},\"required\":[\"beliefs\"]}", "act");
@@ -205,15 +206,15 @@ public final class Kernel {
                 case "unit_action": applyUnitAction(gameInfo, actor, target, params, events); break;
                 case "set_city_focus": applyCityFocus(gameInfo, actor, target, params, events); break;
                 case "purchase_construction": applyPurchase(gameInfo, actor, target, params, events); break;
-                case "declare_war": applyDeclareWar(gameInfo, actor, params, events); break;
-                case "make_peace": applyMakePeace(gameInfo, actor, params, events); break;
+                case "declare_war": applyDeclareWar(gameInfo, actor, target, params, events); break;
+                case "make_peace": applyMakePeace(gameInfo, actor, target, params, events); break;
                 case "adopt_policy": applyAdoptPolicy(gameInfo, actor, params, events); break;
                 case "end_turn": applyEndTurn(gameInfo, actor, ref, events); break;
-                case "propose_trade": applyProposeTrade(gameInfo, actor, params, events); break;
-                case "respond_trade": applyRespondTrade(gameInfo, actor, params, events); break;
+                case "propose_trade": applyProposeTrade(gameInfo, actor, target, params, events); break;
+                case "respond_trade": applyRespondTrade(gameInfo, actor, target, params, events); break;
                 case "choose_beliefs": applyChooseBeliefs(gameInfo, actor, target, params, events); break;
-                case "gift_city_state": applyGiftCityState(gameInfo, actor, params, events); break;
-                case "pledge_protect": applyPledgeProtect(gameInfo, actor, params, events); break;
+                case "gift_city_state": applyGiftCityState(gameInfo, actor, target, params, events); break;
+                case "pledge_protect": applyPledgeProtect(gameInfo, actor, target, params, events); break;
                 case "set_worked_tiles": applySetWorkedTiles(gameInfo, actor, target, params, events); break;
                 case "nuke": applyNuke(gameInfo, actor, target, params, events); break;
                 case "upgrade_unit": applyUpgradeUnit(gameInfo, actor, target, params, events); break;
@@ -272,6 +273,18 @@ public final class Kernel {
         if (dest == null) throw new Fail("ILLEGAL_TARGET", "没有这个格子: " + x + "," + y);
 
         HexCoord from = unit.getTile().getPosition();
+        if (unit.getCurrentMovement() <= 0.05f)
+            throw new Fail("NOT_AVAILABLE", "这个单位这回合已经没有移动力了");
+
+        boolean reachableAnywhere;
+        try {
+            reachableAnywhere = unit.getMovement().canReach(dest);
+        } catch (Throwable e) {
+            reachableAnywhere = false;
+        }
+        if (!reachableAnywhere)
+            throw new Fail("ILLEGAL_TARGET", "这个单位到不了 " + x + "," + y + "（海陆不通或没有可走的路）");
+
         boolean reachable;
         try {
             reachable = unit.getMovement().canReachInCurrentTurn(dest);
@@ -305,7 +318,23 @@ public final class Kernel {
         } catch (Throwable e) {
             throw new Fail("ILLEGAL_TARGET", "建城失败: " + e.getMessage());
         }
-        if (!ok) throw new Fail("NOT_AVAILABLE", "这里不能建城");
+        if (!ok) {
+            StringBuilder why = new StringBuilder("这里不能建城");
+            try {
+                Tile t = unit.getTile();
+                if (t.isWater()) why.append("：水面");
+                else if (t.isImpassible()) why.append("：不可通行地形");
+                City nearest = null;
+                int best = Integer.MAX_VALUE;
+                for (City c : actor.getCities()) {
+                    int d = t.aerialDistanceTo(c.getCenterTile());
+                    if (d < best) { best = d; nearest = c; }
+                }
+                if (nearest != null)
+                    why.append("：离最近的城 ").append(nearest.getName()).append(" 只有 ").append(best).append(" 格");
+            } catch (Throwable ignored) { }
+            throw new Fail("NOT_AVAILABLE", why.toString());
+        }
         List<City> cities = unit.getCiv().getCities();
         if (cities.size() > before) {
             City c = cities.get(cities.size() - 1);
@@ -372,16 +401,34 @@ public final class Kernel {
         if (!buildable)
             throw new Fail("NOT_AVAILABLE", "现在不能生产 " + item + "（缺科技/资源/前置）", buildableNow(gi, city));
 
+        String mode = Json.str(params, "mode");
+        boolean replace = mode == null || !mode.equalsIgnoreCase("append");
+        if (replace) {
+            try {
+                city.getCityConstructions().getConstructionQueue().clear();
+            } catch (Throwable ignored) { }
+        }
         city.getCityConstructions().setCurrentConstruction(item);
+
         Integer count = Json.integer(params, "count");
-        int extra = count == null ? 1 : Math.max(1, Math.min(count, 20));
-        for (int i = 1; i < extra; i++) {
+        int want = count == null ? 1 : Math.max(1, Math.min(count, 20));
+        for (int i = 1; i < want; i++) {
             try {
                 city.getCityConstructions().addToQueue(item, null);
             } catch (Throwable ignored) { }
         }
+
+        // 以引擎的真实队列为准，别报一个自己都没验证过的数字
+        List<String> queue = city.getCityConstructions().getConstructionQueue();
+        StringBuilder qj = new StringBuilder();
+        for (String qq : queue) {
+            if (qj.length() > 0) qj.append(',');
+            qj.append(q(qq));
+        }
         events.add("{\"type\":\"production_set\",\"city\":" + q("city-" + city.getId())
-                + ",\"item\":" + q(item) + ",\"queued\":" + extra + "}");
+                + ",\"item\":" + q(item) + ",\"mode\":" + q(replace ? "replace" : "append")
+                + ",\"requested\":" + want + ",\"queued\":" + queue.size()
+                + ",\"queue\":[" + qj + "]}");
     }
 
     private static void applyResearch(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
@@ -396,6 +443,7 @@ public final class Kernel {
                 if (k.toLowerCase().contains(tech.toLowerCase())) candidates.add(k);
                 if (candidates.size() >= 8) break;
             }
+            if (candidates.isEmpty()) candidates.addAll(actor.getTech().getTechsToResearch());
             throw new Fail("UNKNOWN_ID", "没有这个科技: " + tech, candidates);
         }
         boolean can;
@@ -608,8 +656,8 @@ public final class Kernel {
         throw new Fail("UNKNOWN_ID", "没有这个文明: " + nameOrId, candidates);
     }
 
-    private static void applyDeclareWar(GameInfo gi, Civilization actor, Map<String, Object> params, List<String> events) {
-        Civilization other = requireOtherCiv(gi, actor, Json.str(params, "civ"));
+    private static void applyDeclareWar(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
+        Civilization other = requireOtherCiv(gi, actor, civRef(params, target));
         com.unciv.logic.civilization.diplomacy.DiplomacyManager dm =
                 actor.getDiplomacyManager(other);
         if (dm == null) throw new Fail("NOT_AVAILABLE", "还没遇到这个文明");
@@ -620,8 +668,8 @@ public final class Kernel {
         events.add("{\"type\":\"war_declared\",\"civ\":" + q(other.getCivName()) + "}");
     }
 
-    private static void applyMakePeace(GameInfo gi, Civilization actor, Map<String, Object> params, List<String> events) {
-        Civilization other = requireOtherCiv(gi, actor, Json.str(params, "civ"));
+    private static void applyMakePeace(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
+        Civilization other = requireOtherCiv(gi, actor, civRef(params, target));
         com.unciv.logic.civilization.diplomacy.DiplomacyManager dm =
                 actor.getDiplomacyManager(other);
         if (dm == null) throw new Fail("NOT_AVAILABLE", "还没遇到这个文明");
@@ -697,6 +745,14 @@ public final class Kernel {
         return out;
     }
 
+    /** 文明引用：优先 params.civ，其次 target（允许直接把文明名当 target） */
+    private static String civRef(Map<String, Object> params, String target) {
+        String civ = Json.str(params, "civ");
+        if (civ != null) return civ;
+        if (target != null && !target.startsWith("unit-") && !target.startsWith("city-")) return target;
+        return null;
+    }
+
     // ---------- 交易 ----------
 
     static String offersJson(Iterable<TradeOffer> offers) {
@@ -761,8 +817,8 @@ public final class Kernel {
         staged.add(new TradeOffer(found.getName(), found.getType(), amt, found.getDuration()));
     }
 
-    private static void applyProposeTrade(GameInfo gi, Civilization actor, Map<String, Object> params, List<String> events) {
-        Civilization other = requireOtherCiv(gi, actor, Json.str(params, "civ"));
+    private static void applyProposeTrade(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
+        Civilization other = requireOtherCiv(gi, actor, civRef(params, target));
         if (actor.getDiplomacyManager(other) == null)
             throw new Fail("NOT_AVAILABLE", "还没遇到 " + other.getCivName());
 
@@ -788,8 +844,8 @@ public final class Kernel {
                 + ",\"want\":" + offersJson(trade.getTheirOffers()) + "}");
     }
 
-    private static void applyRespondTrade(GameInfo gi, Civilization actor, Map<String, Object> params, List<String> events) {
-        Civilization other = requireOtherCiv(gi, actor, Json.str(params, "civ"));
+    private static void applyRespondTrade(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
+        Civilization other = requireOtherCiv(gi, actor, civRef(params, target));
         Object acc = params.get("accept");
         boolean accept = !(acc instanceof Boolean) || (Boolean) acc;
         Integer idxParam = Json.integer(params, "index");
@@ -931,8 +987,8 @@ public final class Kernel {
 
     // ---------- 城邦 ----------
 
-    private static void applyGiftCityState(GameInfo gi, Civilization actor, Map<String, Object> params, List<String> events) {
-        Civilization cs = requireOtherCiv(gi, actor, Json.str(params, "civ"));
+    private static void applyGiftCityState(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
+        Civilization cs = requireOtherCiv(gi, actor, civRef(params, target));
         if (!cs.isCityState()) throw new Fail("NOT_AVAILABLE", cs.getCivName() + " 不是城邦");
         Integer gold = Json.integer(params, "gold");
         int amount = gold == null ? 250 : gold;
@@ -955,8 +1011,8 @@ public final class Kernel {
                 + ",\"influence\":" + influence + "}");
     }
 
-    private static void applyPledgeProtect(GameInfo gi, Civilization actor, Map<String, Object> params, List<String> events) {
-        Civilization cs = requireOtherCiv(gi, actor, Json.str(params, "civ"));
+    private static void applyPledgeProtect(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
+        Civilization cs = requireOtherCiv(gi, actor, civRef(params, target));
         if (!cs.isCityState()) throw new Fail("NOT_AVAILABLE", cs.getCivName() + " 不是城邦");
         Object p = params.get("protect");
         boolean protect = !(p instanceof Boolean) || (Boolean) p;
@@ -1450,6 +1506,7 @@ public final class Kernel {
                     Json.integer(args, "cx"), Json.integer(args, "cy"), Json.integer(args, "radius"));
             case "get_events": return Agent.eventsJson(gameInfo, actor, Json.integer(args, "limit"));
             case "get_trade_offers": return Agent.tradeOffersJson(gameInfo, actor, Json.str(args, "civ"));
+            case "get_techs": return Agent.techsJson(gameInfo, actor);
             case "get_religion": return Agent.religionJson(gameInfo, actor);
             case "get_city_states": return Agent.cityStatesJson(gameInfo, actor);
             case "get_spies": return Agent.spiesJson(gameInfo, actor);
