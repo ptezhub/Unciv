@@ -368,8 +368,9 @@ civilizations appear; the acting civilization is excluded.
 `tree` covers every branch in the ruleset, so sub-policies are visible before the branch is
 opened; `ready` means prerequisites are met (culture is a separate question).
 
-`GET /techs` — `{"researching","sciencePerTurn","available":[{name,cost,turns}]}`. Only techs
-whose prerequisites are satisfied are listed; `turns` is `null` while science output is zero.
+`GET /techs` — `{"researching","sciencePerTurn","available":[{name,cost,remaining,turns}]}`.
+Only techs whose prerequisites are satisfied are listed. `remaining` accounts for science
+already invested, and `turns` is computed from it (`null` while science output is zero).
 
 `GET /tile?x&y` — the tile plus `yields:{food,production,gold,science,culture,faith}` for the
 acting civilization, so worked-tile changes can be checked against real numbers.

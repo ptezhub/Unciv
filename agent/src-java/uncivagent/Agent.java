@@ -1158,10 +1158,16 @@ public class Agent {
                 if (!first) sb.append(',');
                 first = false;
                 int cost = c.getTech().costOfTech(name);
+                int remaining = cost;
+                try {
+                    remaining = Math.max(0, c.getTech().remainingScienceToTech(name));
+                } catch (Throwable ignored) { }
                 double perTurn = c.getStats().getStatsForNextTurn().getScience();
                 sb.append("{\"name\":").append(quote(name))
                   .append(",\"cost\":").append(cost)
-                  .append(",\"turns\":").append(perTurn <= 0.01 ? "null" : String.valueOf((int) Math.ceil(cost / perTurn)))
+                  .append(",\"remaining\":").append(remaining)
+                  .append(",\"turns\":").append(perTurn <= 0.01 ? "null"
+                          : String.valueOf((int) Math.ceil(remaining / perTurn)))
                   .append('}');
             }
         } catch (Throwable ignored) { }
