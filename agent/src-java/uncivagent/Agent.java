@@ -87,6 +87,27 @@ public class Agent {
         if (gameInfo == null) System.out.println("[unciv-agent] 无存档，等 POST /load 或 POST /new");
     }
 
+    /** 回合结束时把没被 capture_city 处理的占城按傀儡处理 */
+    private static void resolveStaleCaptures(GameInfo gi, Civilization actor) {
+        List<com.unciv.logic.civilization.PopupAlert> pending = new ArrayList<>();
+        for (com.unciv.logic.civilization.PopupAlert a : actor.getPopupAlerts())
+            if (a.getType() == com.unciv.logic.civilization.AlertType.CityConquered) pending.add(a);
+        for (com.unciv.logic.civilization.PopupAlert a : pending) {
+            City city = null;
+            Iterator<City> it = gi.getCities().iterator();
+            while (it.hasNext()) {
+                City c = it.next();
+                if (c.getId().equals(a.getValue())) city = c;
+            }
+            try {
+                if (city != null && city.getCiv() != actor) city.puppetCity(actor);
+            } catch (Throwable t) {
+                System.out.println("[unciv-agent] 自动处理占城失败: " + t);
+            }
+            actor.getPopupAlerts().remove(a);
+        }
+    }
+
     private static String env(String k, String d) {
         String v = System.getenv(k);
         return v == null || v.isEmpty() ? d : v;
@@ -165,6 +186,8 @@ public class Agent {
 
     private static final Kernel.UncivGameRef TURN = new Kernel.UncivGameRef() {
         @Override public void advanceTurn(GameInfo gi, Civilization actor) {
+            // 有没处理的占城就按引擎默认的"傀儡"落地，避免城市卡在 0 血、旧主仍持有
+            resolveStaleCaptures(gi, actor);
             List<Civilization> humans = humanCivs(gi);
             if (humans.size() <= 1) {
                 gi.nextTurn(null, false);
@@ -541,6 +564,19 @@ public class Agent {
                  .append(",\"hp\":").append(u.getHealth())
                  .append(",\"moves\":").append(u.getCurrentMovement()).append('}');
         }
+        StringBuilder pending = new StringBuilder();
+        for (com.unciv.logic.civilization.PopupAlert alert : c.getPopupAlerts()) {
+            if (alert.getType() != com.unciv.logic.civilization.AlertType.CityConquered) continue;
+            String cname = null;
+            Iterator<City> cit = gi.getCities().iterator();
+            while (cit.hasNext()) {
+                City cc = cit.next();
+                if (cc.getId().equals(alert.getValue())) cname = cc.getName();
+            }
+            if (pending.length() > 0) pending.append(',');
+            pending.append("{\"city\":").append(quote("city-" + alert.getValue()))
+                   .append(",\"name\":").append(cname == null ? "null" : quote(cname)).append('}');
+        }
         String researching = c.getTech().currentTechnologyName();
         return "{\"turn\":" + gi.getTurns()
                 + ",\"civ\":" + quote(c.getCivName())
@@ -550,7 +586,8 @@ public class Agent {
                 + ",\"researching\":" + quote(researching == null ? "" : researching)
                 + ",\"techCount\":" + c.getTech().getTechsResearched().size()
                 + ",\"cities\":[" + cities + "]"
-                + ",\"units\":[" + units + "]}";
+                + ",\"units\":[" + units + "]"
+                + ",\"pendingCaptures\":[" + pending + "]}";
     }
 
     static String unitsJson(GameInfo gi, Civilization c) {
@@ -755,6 +792,16 @@ public class Agent {
                   .append(",\"visible\":").append(t.isVisible(c));
                 String res = t.getResource();
                 if (res != null) sb.append(",\"resource\":").append(quote(res));
+                Civilization owner = t.getOwner();
+                if (owner != null) sb.append(",\"owner\":").append(quote(owner.getCivName()));
+                try {
+                    City tc = t.isCityCenter() ? t.getCity() : null;
+                    if (tc != null) sb.append(",\"city\":{\"id\":").append(quote("city-" + tc.getId()))
+                            .append(",\"name\":").append(quote(tc.getName()))
+                            .append(",\"owner\":").append(quote(tc.getCiv().getCivName()))
+                            .append(",\"pop\":").append(tc.getPopulation().getPopulation())
+                            .append(",\"hp\":").append(tc.getHealth()).append('}');
+                } catch (Throwable ignored) { }
                 sb.append('}');
             }
         }
@@ -801,13 +848,27 @@ public class Agent {
             if (feat.length() > 0) feat.append(',');
             feat.append(quote(f));
         }
-        return "{\"x\":" + x + ",\"y\":" + y
+        StringBuilder cityJson = new StringBuilder("null");
+        try {
+            // getCity() 返回的是"拥有这块地的城"，任何领土格都非空；只有中心格才是那座城
+            City tc = t.isCityCenter() ? t.getCity() : null;
+            if (tc != null) {
+                cityJson = new StringBuilder("{\"id\":").append(quote("city-" + tc.getId()))
+                        .append(",\"name\":").append(quote(tc.getName()))
+                        .append(",\"owner\":").append(quote(tc.getCiv().getCivName()))
+                        .append(",\"pop\":").append(tc.getPopulation().getPopulation())
+                        .append(",\"hp\":").append(tc.getHealth())
+                        .append('}');
+            }
+        } catch (Throwable ignored) { }
+        return "{\"x\":" + t.getPosition().getX() + ",\"y\":" + t.getPosition().getY()
                 + ",\"terrain\":" + quote(t.baseTerrain)
                 + ",\"features\":[" + feat + "]"
                 + ",\"explored\":" + t.isExplored(c)
                 + ",\"visible\":" + t.isVisible(c)
                 + ",\"resource\":" + (t.getResource() == null ? "null" : quote(t.getResource()))
                 + ",\"improvement\":" + (t.getImprovement() == null ? "null" : quote(t.getImprovement()))
+                + ",\"city\":" + cityJson
                 + "}";
     }
 

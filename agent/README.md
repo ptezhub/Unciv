@@ -82,7 +82,7 @@ Full route list, intent schema, error codes and MCP methods: [docs/PROTOCOL.md](
 
 ## Differences from upstream
 
-Four changes, on branch `agent-host`:
+Five changes, on branch `agent-host`:
 
 1. **`settings.gradle.kts`** — adds `"agent"` to `include(...)`.
 2. **`core/src/com/unciv/logic/map/mapunit/actions/UnitActions.kt`** — two `GUI.isWorldLoaded()`
@@ -94,7 +94,13 @@ Four changes, on branch `agent-host`:
    host has no audio backend, and any unique that plays a sound (ancient ruins, promotions,
    era changes) threw while the action was being applied — `POST /new` could fail outright if a
    starting unit walked onto a ruin. The guards make sound a no-op where there is no backend.
-4. **`agent/`** — this module, plus its `.gitignore` entries.
+4. **`core/src/com/unciv/logic/battle/Battle.kt`** — one condition in `conquerCity`: the
+   popup is queued when `autoPlay?.isAutoPlayingAndFullAutoPlayAI() != true` rather than
+   `== false`. With a headless host there is no world screen at all, so the old test was
+   false and every human capture silently fell into the AI's `automateCityConquer`; now the
+   decision is queued and the host resolves it (or falls back to the engine default at
+   `end_turn`).
+5. **`agent/`** — this module, plus its `.gitignore` entries.
 
 Nothing else in `core` is touched. The host runs on the unmodified upstream game logic, so a
 save produced here is an ordinary Unciv save.
@@ -107,10 +113,12 @@ git fetch upstream master
 git rebase upstream/master
 ```
 
-Three commits are expected to conflict, and all are small:
+Four commits are expected to conflict, and all are small:
 
 - `settings.gradle.kts`: keep `"agent"` in the `include(...)` list, and re-check whether
   upstream added modules of its own.
+- `Battle.kt`: keep the `!= true` test in `conquerCity`; `== false` would push headless
+  human captures back into the AI branch.
 - `SoundPlayer.kt`: re-apply the two `Gdx.audio == null` guards; they sit at the top of
   `get()` and inside `Preloader.preload()`.
 - `UnitActions.kt`: re-apply the two guards if upstream rewrote the surrounding functions.

@@ -139,6 +139,7 @@ Event types and their fields:
 | `spy_moved` | `spy`, `to` |
 | `specialists_set` | `city`, `specialists:{name:count}` |
 | `city_annexed` | `city`, `name` |
+| `city_captured` | `city`, `name`, `from`, `action`, `isPuppet` |
 | `turn_advanced` | `from`, `to`, `currentCiv` |
 
 `turn_advanced` is emitted whenever `end_turn` was accepted, including when the host is still
@@ -177,7 +178,7 @@ candidates are there to be retried.
 
 ## Tool table
 
-39 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
+40 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
 drift from the code.
 
 Read (`kind: read`) — these are not intents; call the HTTP route or the MCP tool:
@@ -203,7 +204,7 @@ Act (`kind: act`):
 
 | Tool | Params | Notes |
 |---|---|---|
-| `move_unit` | `unit`, `x`, `y` | one call, whatever movement is left; no path returned |
+| `move_unit` | `unit`, `x`, `y` | moves toward the tile: exactly if it is reachable this turn, otherwise as far as the path allows. The event carries `arrived` and `tilesLeft`, so call it again next turn to keep walking |
 | `found_city` | `unit` | settler must be able to found here |
 | `set_city_production` | `city`, `item`, `count` | name must be in the ruleset; reverts on failure; `count>1` enqueues that many so the city does not fall back to `Nothing` |
 | `set_research` | `tech` | replaces the research queue with one tech |
@@ -227,6 +228,7 @@ Act (`kind: act`):
 | `spy_move` | `spy`, `city?` | `spy` is a name or an index; `city` omitted or `hideout` recalls the spy |
 | `set_city_specialists` | `city`, `specialists:{name:count}` | switches the city to manual specialists; names omitted from the object are cleared, `{}` clears all. Free population is rebalanced immediately |
 | `annex_city` | `city` | turns one of your puppets into a directly controlled city |
+| `capture_city` | `city`, `action?` | resolves a city you just took: `puppet` (default), `annex`, `raze`, `liberate`. Only works while the capture is still pending — see below |
 
 Turn (`kind: turn`):
 
@@ -246,7 +248,7 @@ Names are exact. `UNKNOWN_ID` returns up to 8 substring matches, so `Monu` sugge
 | `initialize` | `protocolVersion: "2025-06-18"`, `capabilities.tools`, `serverInfo: {name:"unciv-agent",version:"0.1.0"}` |
 | `notifications/initialized` | HTTP `202`, empty body |
 | `ping` | `{}` |
-| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 39 entries |
+| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 40 entries |
 | `tools/call` | `{content:[{type:"text",text:"<tool JSON as a string>"}],isError:bool}` |
 | anything else | `-32601 Method not found` |
 
@@ -290,8 +292,12 @@ Field lists are exact — no extra fields, no nesting beyond what is shown.
 {"turn":42,"civ":"Rome","alive":true,"defeated":false,"gold":310,
  "researching":"Pottery","techCount":7,
  "cities":[{"id":"city-3f2a…","name":"Rome","pop":4,"x":8,"y":-1,"production":"Monument"}],
- "units":[{"id":"unit-17","name":"Warrior","x":9,"y":0,"hp":100,"moves":2.0}]}
+ "units":[{"id":"unit-17","name":"Warrior","x":9,"y":0,"hp":100,"moves":2.0}],
+ "pendingCaptures":[]}
 ```
+
+`pendingCaptures` lists cities you have taken but not yet resolved with `capture_city`;
+each entry is `{city,name}`.
 
 `GET /units` — `{"units":[{id,name,x,y,hp,moves,maxMoves,canAttack,military,civilian,embarked,range,xp,canPromote,promotions:[…],canUpgradeTo:[…]}]}`.
 `canAttack` is the engine's own predicate; it does not mean a target is in range.
@@ -322,8 +328,11 @@ Note the candidates here are objects, unlike intent errors where they are string
 
 `GET /map?cx&cy&radius` — `radius` defaults to 3 and is clamped to `0..12`; `cx`/`cy` default
 to `0,0`. Only tiles explored by the acting civilization are returned:
-`{"center":[cx,cy],"radius":r,"tiles":[{x,y,terrain,visible,resource?}]}`. `resource` is
-omitted when the tile has none. `visible` is current sight, not just explored.
+`{"center":[cx,cy],"radius":r,"tiles":[{x,y,terrain,visible,resource?,owner?,city?}]}`.
+`resource` is omitted when the tile has none; `owner` is the civilization owning the tile;
+`city` appears **only on a city centre tile** — the engine's own `Tile.getCity()` returns the
+owning city for every tile in its territory, which is not what an attacker wants.
+`visible` is current sight, not just explored.
 
 `GET /events?limit` — `limit` defaults to 20, clamped to `1..200`; the newest `N` are returned:
 `{"total":N,"events":[{category,text}]}`. `category` is a `Notification.Category` name.
@@ -389,9 +398,11 @@ Clients should therefore treat "`turn_advanced` with `from == to`" as "waiting",
 
 ## Known gaps
 
-- City capture still goes through the engine's automatic decision (headless has no
-  `worldScreen`, so `automateCityConquer` runs). `annex_city` can only convert a puppet you
-  already own; there is no way to choose annex/puppet/raze at the moment of capture.
+- City capture is deferred: a headless human civilization queues the decision instead of
+  letting `automateCityConquer` decide, so `get_state.pendingCaptures` lists the city and
+  `capture_city` picks annex/puppet/raze/liberate. If the agent does not resolve it before
+  `end_turn`, the host falls back to the engine default (puppet) so a city can never be left
+  at zero health with its old owner.
 - Espionage exposes movement and status only: there is no way to start a coup, rig an
   election, or pick a specific tech to steal — the engine chains those automatically after a
   spy establishes a network.

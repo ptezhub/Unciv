@@ -151,6 +151,8 @@ public final class Kernel {
                 "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"specialists\":{\"type\":\"object\"}},\"required\":[\"city\",\"specialists\"]}", "act");
         tool("annex_city", "把傀儡城转为直辖。",
                 "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"]}", "act");
+        tool("capture_city", "处理刚打下来的城市：action 为 puppet / annex / raze / liberate，默认 puppet。",
+                "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"action\":{\"type\":\"string\"}},\"required\":[\"city\"]}", "act");
     }
 
     public static Map<String, Tool> tools() { return TOOLS; }
@@ -215,6 +217,7 @@ public final class Kernel {
                 case "spy_move": applySpyMove(gameInfo, actor, params, events); break;
                 case "set_city_specialists": applySetSpecialists(gameInfo, actor, target, params, events); break;
                 case "annex_city": applyAnnexCity(gameInfo, actor, target, params, events); break;
+                case "capture_city": applyCaptureCity(gameInfo, actor, target, params, events); break;
                 default: return error("UNKNOWN_ACTION", "动作未实现: " + type, null);
             }
         } catch (Fail f) {
@@ -266,15 +269,27 @@ public final class Kernel {
         if (dest == null) throw new Fail("ILLEGAL_TARGET", "没有这个格子: " + x + "," + y);
 
         HexCoord from = unit.getTile().getPosition();
+        boolean reachable;
         try {
-            unit.getMovement().moveToTile(dest, true);
+            reachable = unit.getMovement().canReachInCurrentTurn(dest);
+        } catch (Throwable e) {
+            reachable = false;
+        }
+        try {
+            if (reachable) unit.getMovement().moveToTile(dest, true);
+            else unit.getMovement().headTowards(dest);   // 跨回合寻路：这一回合能走多远走多远
         } catch (Throwable e) {
             throw new Fail("ILLEGAL_TARGET", "走不过去: " + e.getMessage());
         }
         HexCoord to = unit.getTile().getPosition();
+        boolean arrived = to.getX() == dest.getPosition().getX() && to.getY() == dest.getPosition().getY();
+        int left = unit.getTile().aerialDistanceTo(dest);
         events.add("{\"type\":\"unit_moved\",\"unit\":" + q("unit-" + unit.getId())
                 + ",\"from\":[" + from.getX() + "," + from.getY() + "]"
                 + ",\"to\":[" + to.getX() + "," + to.getY() + "]"
+                + ",\"target\":[" + dest.getPosition().getX() + "," + dest.getPosition().getY() + "]"
+                + ",\"arrived\":" + arrived
+                + ",\"tilesLeft\":" + left
                 + ",\"moves\":" + unit.getCurrentMovement() + "}");
     }
 
@@ -400,9 +415,14 @@ public final class Kernel {
         Integer y = Json.integer(params, "y");
         if (x == null || y == null) throw new Fail("BAD_PARAMS", "需要 x 与 y");
 
-        PathsToTilesWithinTurn paths = unit.getMovement().getDistanceToTiles(false, null, null, false);
-        ArrayList<AttackableTile> targets =
-                TargetHelper.INSTANCE.getAttackableEnemies(unit, paths, null, stayOnTile);
+        PathsToTilesWithinTurn paths;
+        ArrayList<AttackableTile> targets;
+        try {
+            paths = unit.getMovement().getDistanceToTiles(false, null, null, false);
+            targets = TargetHelper.INSTANCE.getAttackableEnemies(unit, paths, null, stayOnTile);
+        } catch (Throwable e) {
+            throw new Fail("ILLEGAL_TARGET", "算不出攻击路线: " + e.getMessage());
+        }
 
         AttackableTile hit = null;
         List<String> candidates = new ArrayList<>();
@@ -571,7 +591,8 @@ public final class Kernel {
         if (dm == null) throw new Fail("NOT_AVAILABLE", "还没遇到这个文明");
         if (actor.isAtWarWith(other)) throw new Fail("NOT_AVAILABLE", "已经和 " + other.getCivName() + " 交战");
         if (!dm.canDeclareWar()) throw new Fail("NOT_AVAILABLE", "现在不能宣战");
-        dm.declareWar(null);
+        dm.declareWar(new com.unciv.logic.civilization.diplomacy.DeclareWarReason(
+                com.unciv.logic.civilization.diplomacy.WarType.DirectWar, null));
         events.add("{\"type\":\"war_declared\",\"civ\":" + q(other.getCivName()) + "}");
     }
 
@@ -1156,6 +1177,87 @@ public final class Kernel {
                 + ",\"name\":" + q(city.getName()) + "}");
     }
 
+    // ---------- 占城决策 ----------
+
+    /** 找出本文明待处理的占城弹窗对应的城市 */
+    private static City pendingCapture(GameInfo gi, Civilization actor, String ref) {
+        for (com.unciv.logic.civilization.PopupAlert alert : actor.getPopupAlerts()) {
+            if (alert.getType() != com.unciv.logic.civilization.AlertType.CityConquered) continue;
+            if (ref != null && !ref.equals(alert.getValue())) continue;
+            Iterator<City> it = gi.getCities().iterator();
+            while (it.hasNext()) {
+                City c = it.next();
+                if (c.getId().equals(alert.getValue())) return c;
+            }
+        }
+        return null;
+    }
+
+    private static void applyCaptureCity(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
+        String cityId = target != null && target.startsWith("city-") ? target.substring(5) : null;
+        City city = pendingCapture(gi, actor, cityId);
+        if (city == null) {
+            List<String> waiting = new ArrayList<>();
+            for (com.unciv.logic.civilization.PopupAlert alert : actor.getPopupAlerts()) {
+                if (alert.getType() == com.unciv.logic.civilization.AlertType.CityConquered)
+                    waiting.add("city-" + alert.getValue());
+            }
+            throw new Fail("NOT_AVAILABLE", waiting.isEmpty()
+                    ? "现在没有待处理的占城"
+                    : "这个城市不在待处理列表里", waiting);
+        }
+
+        String action = Json.str(params, "action");
+        if (action == null) action = "puppet";
+        action = action.toLowerCase();
+        boolean mayAnnex = !actor.hasUnique(com.unciv.models.ruleset.unique.UniqueType.MayNotAnnexCities,
+                actor.getState());
+        String name = city.getName();
+        String oldOwner = city.getCiv().getCivName();
+
+        try {
+            switch (action) {
+                case "puppet":
+                    city.puppetCity(actor);
+                    break;
+                case "annex":
+                    if (!mayAnnex) throw new Fail("NOT_AVAILABLE", "这个文明不能直辖城市");
+                    city.puppetCity(actor);
+                    city.annexCity();
+                    break;
+                case "raze":
+                    if (!city.canBeDestroyed(true))
+                        throw new Fail("NOT_AVAILABLE", name + " 不能夷平（原首都或圣城）");
+                    city.puppetCity(actor);
+                    if (mayAnnex) city.annexCity();
+                    city.setBeingRazed(true);
+                    break;
+                case "liberate": {
+                    Civilization founder = city.getFoundingCivObject();
+                    if (founder == null) throw new Fail("NOT_AVAILABLE", name + " 没有原始所有者");
+                    if (founder == actor) throw new Fail("NOT_AVAILABLE", name + " 本来就是你的城");
+                    city.liberateCity(actor);
+                    break;
+                }
+                default:
+                    throw new Fail("UNKNOWN_ID", "没有这个处理方式: " + action,
+                            java.util.Arrays.asList("puppet", "annex", "raze", "liberate"));
+            }
+        } catch (Fail f) {
+            throw f;
+        } catch (Throwable e) {
+            throw new Fail("NOT_AVAILABLE", "处理占城失败: " + e.getMessage());
+        }
+
+        // 清掉对应弹窗，否则下一次读档/回合还会挂着
+        actor.getPopupAlerts().removeIf(a -> a.getType() == com.unciv.logic.civilization.AlertType.CityConquered
+                && a.getValue().equals(city.getId()));
+
+        events.add("{\"type\":\"city_captured\",\"city\":" + q("city-" + city.getId())
+                + ",\"name\":" + q(name) + ",\"from\":" + q(oldOwner)
+                + ",\"action\":" + q(action) + ",\"isPuppet\":" + city.isPuppet() + "}");
+    }
+
     // ---------- 对象解析 ----------
 
     private static MapUnit requireOwnUnit(GameInfo gi, Civilization actor, String target) {
@@ -1324,6 +1426,7 @@ public final class Kernel {
             case "spy_move":
             case "set_city_specialists":
             case "annex_city":
+            case "capture_city":
             case "end_turn": {
                 StringBuilder sb = new StringBuilder("{\"type\":").append(q(name));
                 Map<String, Object> rest = new LinkedHashMap<>(args);
