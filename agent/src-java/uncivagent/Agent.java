@@ -875,6 +875,21 @@ public class Agent {
                 Civilization owner = t.getOwner();
                 if (owner != null) sb.append(",\"owner\":").append(quote(owner.getCivName()));
                 try {
+                    StringBuilder us = new StringBuilder();
+                    Iterator<MapUnit> uit = t.getUnits().iterator();
+                    while (uit.hasNext()) {
+                        MapUnit mu = uit.next();
+                        if (mu.getCiv() == c) continue;   // 自己的单位在 /units
+                        if (us.length() > 0) us.append(',');
+                        us.append("{\"id\":").append(quote("unit-" + mu.getId()))
+                          .append(",\"owner\":").append(quote(mu.getCiv().getCivName()))
+                          .append(",\"name\":").append(quote(mu.getName()))
+                          .append(",\"hp\":").append(mu.getHealth())
+                          .append(",\"military\":").append(mu.isMilitary()).append('}');
+                    }
+                    if (us.length() > 0) sb.append(",\"units\":[").append(us).append(']');
+                } catch (Throwable ignored) { }
+                try {
                     City tc = t.isCityCenter() ? t.getCity() : null;
                     if (tc != null) sb.append(",\"city\":{\"id\":").append(quote("city-" + tc.getId()))
                             .append(",\"name\":").append(quote(tc.getName()))

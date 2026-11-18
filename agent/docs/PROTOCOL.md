@@ -140,7 +140,11 @@ Event types and their fields:
 | `specialists_set` | `city`, `specialists:{name:count}` |
 | `city_annexed` | `city`, `name` |
 | `city_captured` | `city`, `name`, `from`, `action`, `isPuppet` |
-| `turn_advanced` | `from`, `to`, `currentCiv` |
+| `turn_advanced` | `from`, `to`, `currentCiv`, `warnings:[string]` |
+
+`turn_advanced.warnings` is advisory and only covers things an agent commonly forgets: units
+still holding movement, cities producing nothing, captures still pending. It never blocks the
+turn.
 
 `turn_advanced` is emitted whenever `end_turn` was accepted, including when the host is still
 waiting for other human civilizations and nothing moved. Compare `from` and `to` — see
@@ -159,6 +163,7 @@ Failure envelope:
 | `BAD_JSON` | body is not parseable JSON | — |
 | `BAD_INTENT` | no `type` | — |
 | `UNKNOWN_ACTION` | `type` not in the tool table, not implemented, or an unknown `UnitActionType` | — |
+| `ID_REUSED` | the same `id` arrived with a different action; nothing was applied | — |
 | `NOT_AN_ACTION` | `type` is a `read` tool | — |
 | `STALE` | `turn` does not match the current turn | — |
 | `BAD_PARAMS` | a required param is missing, or `target` is not `unit-<int>` / `city-<uuid>` | — |
@@ -167,6 +172,7 @@ Failure envelope:
 | `NOT_YOUR_CITY` | target city is not in the acting civ | the caller's city ids |
 | `NOT_AVAILABLE` | the action is not legal right now (no promotion pending, cannot research, already at war, cannot afford, …) | — |
 | `ILLEGAL_TARGET` | move is blocked, attack target out of reach, found-city illegal | attack: reachable `"x,y"` strings |
+| `NOT_AVAILABLE` (attack) | target is a foreign city/unit and you are not at war — the message says to `declare_war` first | reachable tiles |
 | `INTERNAL` | anything uncaught inside `apply` | — |
 
 `NOT_YOUR_TURN` from the design draft is **not** implemented: the host does not reject an
@@ -293,11 +299,16 @@ Field lists are exact — no extra fields, no nesting beyond what is shown.
  "researching":"Pottery","techCount":7,
  "cities":[{"id":"city-3f2a…","name":"Rome","pop":4,"x":8,"y":-1,"production":"Monument"}],
  "units":[{"id":"unit-17","name":"Warrior","x":9,"y":0,"hp":100,"moves":2.0}],
- "pendingCaptures":[]}
+ "stats":{"goldPerTurn":9.0,"sciencePerTurn":14.0,"culturePerTurn":3.0,"faithPerTurn":2.0,
+          "productionPerTurn":0.0,"foodPerTurn":0.0,"happiness":4,"unitSupply":7},
+ "pendingCaptures":[],"seed":777,"gameId":"1b2c…"}
 ```
 
 `pendingCaptures` lists cities you have taken but not yet resolved with `capture_city`;
-each entry is `{city,name}`.
+each entry is `{city,name}`. `stats` are the projected per-turn yields for the coming turn —
+they read as zero before the first `end_turn`. `seed` is the map seed and `gameId` is the
+engine's per-game id (starting unit placement derives from it, so only the map and the
+civilization are reproducible from `seed`).
 
 `GET /units` — `{"units":[{id,name,x,y,hp,moves,maxMoves,canAttack,military,civilian,embarked,range,xp,canPromote,promotions:[…],canUpgradeTo:[…]}]}`.
 `canAttack` is the engine's own predicate; it does not mean a target is in range.
@@ -317,18 +328,24 @@ each entry is `{city,name}`.
  "avoidGrowth":false,"inResistance":false,
  "buildings":["Palace","Monument","Library"],
  "specialists":{"Scientist":1},"maxSpecialists":{"Scientist":2},"manualSpecialists":true,
- "turnsToGrowth":7,"foodToNextPop":24,
+ "turnsToGrowth":7,"foodToNextPop":24,"turnsToBuild":5,
+ "purchasable":[{"item":"Worker","gold":220},{"item":"Temple","gold":300,"faith":200}],
  "religion":{"majority":"Buddhism","holyCityOf":"Buddhism"},
  "buildable":["Monument","Warrior",…]}
 ```
 
-`buildable` is capped at 40 entries, filtered by `canAddToQueue`. Unknown id →
+`buildable` is capped at 40 entries, filtered by `canAddToQueue`. `turnsToBuild` is the
+remaining turns for the current item (`null` when nothing is being built or production is
+zero). `purchasable` lists up to 20 items you can buy *right now*, with the price in each
+currency that would work — so a purchase attempt never has to be trial and error. Unknown id →
 `{"ok":false,"error":{"code":"UNKNOWN_ID","message":…,"candidates":[{"id":…,"name":…}]}}`.
 Note the candidates here are objects, unlike intent errors where they are strings.
 
 `GET /map?cx&cy&radius` — `radius` defaults to 3 and is clamped to `0..12`; `cx`/`cy` default
 to `0,0`. Only tiles explored by the acting civilization are returned:
-`{"center":[cx,cy],"radius":r,"tiles":[{x,y,terrain,visible,resource?,owner?,city?}]}`.
+`{"center":[cx,cy],"radius":r,"tiles":[{x,y,terrain,visible,resource?,owner?,city?,units?}]}`.
+`units` lists foreign units standing on a tile you can see — `{id,owner,name,hp,military}` —
+which is how you notice an incoming army before it reaches a city.
 `resource` is omitted when the tile has none; `owner` is the civilization owning the tile;
 `city` appears **only on a city centre tile** — the engine's own `Tile.getCity()` returns the
 owning city for every tile in its territory, which is not what an attacker wants.
