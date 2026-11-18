@@ -85,6 +85,27 @@ mistake. The rest is the metric set to compare between models: turns survived, c
 population, techs, happiness, contacts. A model that plays badly should show worse numbers
 with `ok: true`; `ok: false` means the harness failed it.
 
+## Sieges, and why the harness is not to blame
+
+Two soak runs failed to take a city, and both times the cause was a game rule, not the API.
+Worth writing down so a benchmark run is not scored as a harness failure:
+
+- A city heals **20 HP every turn**, unconditionally (`CityTurnManager`). Damage below 20 per
+  turn is zero progress.
+- Same-era city defence is around 95. Infantry (70) deals ~25 and takes ~38; melee is a losing
+  trade. Ranged is the only way in, and a single artillery piece nets ~8 HP per turn.
+- Ranged attacks require the target to be **in view** (`viewableTiles`), even with Indirect
+  Fire, so the effective range is shorter than `/units.range` suggests unless something is
+  spotting. `/units` reports engine range; the attack error now says so when nothing is
+  visible.
+- Units are **disbanded** when the treasury cannot pay upkeep, the turn after they appear. An
+  agent that queues artillery at -7.5 gold per turn loses it silently unless it reads events.
+  `end_turn` now warns about negative income and the number of turns left.
+
+The recipe that should work: two or three cities of production, artillery at 2 tiles with a
+spotter, gold per turn positive before queueing them, and a melee unit to walk in once the city
+is at zero. `capture_city` itself has only been exercised on its error path so far.
+
 ## What this does not cover
 
 Game-state-dependent paths: capturing a city, launching a nuke, stealing a tech, upgrading a

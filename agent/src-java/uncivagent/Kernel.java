@@ -521,7 +521,16 @@ public final class Kernel {
                 if (owner != null && owner != actor && !actor.isAtWarWith(owner))
                     throw new Fail("NOT_AVAILABLE", "还没和 " + owner.getCivName() + " 宣战，先 declare_war", candidates);
             }
-            throw new Fail("ILLEGAL_TARGET", "打不到 " + x + "," + y + (stayOnTile ? "（只能原地轰击）" : ""), candidates);
+            String hint = "";
+            try {
+                boolean ranged = !unit.getBaseUnit().isMelee();
+                if (ranged && candidates.isEmpty())
+                    hint = "；射程内没有可见目标，远程攻击要求目标在视野里，先派单位靠近";
+                else if (!ranged && candidates.isEmpty())
+                    hint = "；附近没有可打的敌人，近战要求相邻";
+            } catch (Throwable ignored) { }
+            throw new Fail("ILLEGAL_TARGET", "打不到 " + x + "," + y
+                    + (stayOnTile ? "（只能原地轰击）" : "") + hint, candidates);
         }
 
         MapUnitCombatant attacker = new MapUnitCombatant(unit);
@@ -746,6 +755,17 @@ public final class Kernel {
             if (researching == null || researching.isEmpty())
                 warnings.add("没有在研究的科技，这回合的科研会浪费");
         } catch (Throwable ignored) { }
+        try {
+            float gpt = actor.getStats().getStatsForNextTurn().getGold();
+            int treasury = actor.getGold();
+            if (treasury < 0)
+                warnings.add("国库是负的（" + treasury + "），单位会被解散");
+            else if (gpt < 0) {
+                int turnsLeft = (int) Math.floor(treasury / -gpt);
+                warnings.add("每回合亏 " + round1(gpt) + " 金币，国库 " + treasury
+                        + "，大约 " + turnsLeft + " 回合后会被迫解散单位");
+            }
+        } catch (Throwable ignored) { }
         int pending = 0;
         for (com.unciv.logic.civilization.PopupAlert a : actor.getPopupAlerts())
             if (a.getType() == com.unciv.logic.civilization.AlertType.CityConquered) pending++;
@@ -796,6 +816,10 @@ public final class Kernel {
               .append(",\"duration\":").append(o.getDuration()).append('}');
         }
         return sb.append(']').toString();
+    }
+
+    static String round1(float v) {
+        return String.valueOf(Math.round(v * 10f) / 10f);
     }
 
     static String quotedList(List<String> values) {
