@@ -160,7 +160,7 @@ candidates are there to be retried.
 
 ## Tool table
 
-22 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
+24 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
 drift from the code.
 
 Read (`kind: read`) — these are not intents; call the HTTP route or the MCP tool:
@@ -175,6 +175,8 @@ Read (`kind: read`) — these are not intents; call the HTTP route or the MCP to
 | `get_events` | `limit` | `GET /events` |
 | `get_diplomacy` | — | `GET /diplomacy` |
 | `get_policies` | — | `GET /policies` |
+| `get_victory_progress` | — | MCP only for now |
+| `get_tile` | `x`, `y` | MCP only for now |
 
 Act (`kind: act`):
 
@@ -182,12 +184,12 @@ Act (`kind: act`):
 |---|---|---|
 | `move_unit` | `unit`, `x`, `y` | one call, whatever movement is left; no path returned |
 | `found_city` | `unit` | settler must be able to found here |
-| `set_city_production` | `city`, `item` | name must be in the ruleset; reverts on failure |
+| `set_city_production` | `city`, `item`, `count` | name must be in the ruleset; reverts on failure; `count>1` enqueues that many so the city does not fall back to `Nothing` |
 | `set_research` | `tech` | replaces the research queue with one tech |
 | `attack` | `unit`, `x`, `y` | melee/ranged; target must be reachable this turn |
 | `bombard` | `unit`, `x`, `y` | ranged only, unit stays put |
 | `promote_unit` | `unit`, `promotion` | must be in the unit's available promotions |
-| `unit_action` | `unit`, `action` | a `UnitActionType` name: `Fortify`, `Sleep`, `Explore`, `Automate`, `Pillage`, `SetUp`, `Disband`, … |
+| `unit_action` | `unit`, `action`, `id` | a `UnitActionType` name: `Fortify`, `Sleep`, `Explore`, `Automate`, `Pillage`, `CreateImprovement`, …; `id` selects the concrete target (improvement name, unique) |
 | `set_city_focus` | `city`, `focus` | a `CityFocus` name |
 | `purchase_construction` | `city`, `item` | gold purchase |
 | `declare_war` | `civ` | must have met them and be allowed to declare |
@@ -212,7 +214,7 @@ Names are exact. `UNKNOWN_ID` returns up to 8 substring matches, so `Monu` sugge
 | `initialize` | `protocolVersion: "2025-06-18"`, `capabilities.tools`, `serverInfo: {name:"unciv-agent",version:"0.1.0"}` |
 | `notifications/initialized` | HTTP `202`, empty body |
 | `ping` | `{}` |
-| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 22 entries |
+| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 24 entries |
 | `tools/call` | `{content:[{type:"text",text:"<tool JSON as a string>"}],isError:bool}` |
 | anything else | `-32601 Method not found` |
 

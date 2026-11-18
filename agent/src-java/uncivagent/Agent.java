@@ -107,6 +107,14 @@ public class Agent {
         gameInfo = gi;
         game.setGameInfo(gi);
         submitted.clear();
+        File sidecar = new File(path + ".submitted");
+        if (sidecar.exists()) {
+            try {
+                for (String line : Files.readAllLines(sidecar.toPath(), StandardCharsets.UTF_8)) {
+                    if (!line.trim().isEmpty()) submitted.add(line.trim());
+                }
+            } catch (IOException ignored) { }
+        }
         System.out.println("[unciv-agent] 载入存档 " + path + " 回合 " + gi.getTurns());
     }
 
@@ -124,12 +132,15 @@ public class Agent {
         GameInfo gi = gameInfo;
         if (gi == null) return null;
         String token = tokenOf(ex);
-        if (token != null && tokenToCiv.containsKey(token)) {
+        if (token != null) {
             String civName = tokenToCiv.get(token);
+            if (civName == null) return null;              // 未知 token，直接拒绝
             for (Civilization c : gi.getCivilizations()) {
                 if (c.getCivName().equals(civName)) return c;
             }
+            return null;                                    // token 指向的文明不在本局
         }
+        if (!tokenToCiv.isEmpty()) return null;             // 多文明模式必须带 token
         return gi.getCurrentPlayerCiv();
     }
 
@@ -206,6 +217,20 @@ public class Agent {
                 Map<String, Object> body = Json.obj(Json.parse(readBody(ex)));
                 String civ = Json.str(body, "civ");
                 if (civ == null) { send(ex, 400, "{\"error\":\"需要 civ\"}"); return; }
+                boolean exists = false;
+                for (Civilization c : need().getCivilizations()) {
+                    if (c.getCivName().equals(civ)) exists = true;
+                }
+                if (!exists) {
+                    StringBuilder names = new StringBuilder();
+                    for (Civilization c : need().getCivilizations()) {
+                        if (names.length() > 0) names.append(',');
+                        names.append(quote(c.getCivName()));
+                    }
+                    send(ex, 404, "{\"error\":{\"code\":\"UNKNOWN_ID\",\"message\":"
+                            + quote("本局没有这个文明: " + civ) + ",\"candidates\":[" + names + "]}}");
+                    return;
+                }
                 String token = Json.str(body, "token");
                 if (token == null) token = java.util.UUID.randomUUID().toString();
                 tokenToCiv.put(token, civ);
@@ -216,7 +241,16 @@ public class Agent {
             // ---- Agent 接口 ----
             Civilization actor = actorFor(ex);
 
-            if (actor == null && (path.equals("/intent") || path.equals("/mcp") || path.equals("/state")
+            boolean isAgentRoute = (path.equals("/intent") || path.equals("/state")
+                    || path.equals("/units") || path.equals("/cities") || path.equals("/map")
+                    || path.equals("/events") || path.equals("/diplomacy") || path.equals("/policies")
+                    || path.startsWith("/city/") || path.equals("/actions")
+                    || path.equals("/act") || path.equals("/move") || path.equals("/endturn"));
+            if (isAgentRoute && actor == null && !tokenToCiv.isEmpty()) {
+                send(ex, 401, "{\"error\":{\"code\":\"UNAUTHORIZED\",\"message\":\"多文明模式必须带有效 token\"}}");
+                return;
+            }
+            if (actor == null && (path.equals("/intent") || path.equals("/state")
                     || path.equals("/units") || path.equals("/cities") || path.equals("/map")
                     || path.equals("/events") || path.equals("/diplomacy") || path.equals("/policies")
                     || path.startsWith("/city/") || path.equals("/actions")
@@ -229,7 +263,7 @@ public class Agent {
                 return;
             }
             if (path.equals("/mcp") && method.equals("POST")) {
-                String out = Kernel.handleMcp(readBody(ex), need(), TURN, actor);
+                String out = Kernel.handleMcp(readBody(ex), gameInfo, TURN, actor);
                 if (out.isEmpty()) { ex.sendResponseHeaders(202, -1); ex.close(); return; }
                 send(ex, 200, out);
                 return;
@@ -263,9 +297,11 @@ public class Agent {
                 String type = Json.str(b, "type");
                 Integer unit = Json.integer(b, "unit");
                 if (type == null) { send(ex, 400, err("需要 type")); return; }
+                String id = Json.str(b, "id");
+                String params = id == null ? "{}" : "{\"id\":" + Kernel.q(id) + "}";
                 String intent = "{\"type\":" + Kernel.q(normalizeAction(type))
                         + ",\"target\":" + (unit == null ? "null" : Kernel.q("unit-" + unit))
-                        + ",\"params\":{}}";
+                        + ",\"params\":" + params + "}";
                 send(ex, 200, Kernel.handleIntent(intent, need(), TURN, actor));
                 return;
             }
@@ -303,7 +339,16 @@ public class Agent {
                 Map<String, Object> b = Json.obj(Json.parse(readBody(ex)));
                 String p = Json.str(b, "path");
                 if (p == null) { send(ex, 400, err("需要 path")); return; }
-                loadSave(p);
+                if (!new File(p).exists()) {
+                    send(ex, 404, "{\"error\":{\"code\":\"NOT_FOUND\",\"message\":" + quote("存档不存在: " + p) + "}}");
+                    return;
+                }
+                try {
+                    loadSave(p);
+                } catch (Throwable t) {
+                    send(ex, 400, "{\"error\":{\"code\":\"BAD_SAVE\",\"message\":" + quote("读不出这个存档: " + t.getMessage()) + "}}");
+                    return;
+                }
                 send(ex, 200, stateJson(need(), need().getCurrentPlayerCiv()));
                 return;
             }
@@ -312,6 +357,10 @@ public class Agent {
                 String p = Json.str(b, "path");
                 if (p == null) { send(ex, 400, err("需要 path")); return; }
                 FileConversions.INSTANCE.writeJson(new FileHandle(new File(p)), need(), false);
+                try {
+                    Files.write(new File(p + ".submitted").toPath(),
+                            String.join("\n", submitted).getBytes(StandardCharsets.UTF_8));
+                } catch (IOException ignored) { }
                 send(ex, 200, "{\"ok\":true,\"path\":" + Kernel.q(p) + "}");
                 return;
             }
@@ -613,6 +662,42 @@ public class Agent {
         return sb.append("]}").toString();
     }
 
+    static String victoryJson(GameInfo gi, Civilization c) {
+        StringBuilder sb = new StringBuilder("{\"turn\":").append(gi.getTurns()).append(",\"victories\":[");
+        boolean first = true;
+        try {
+            for (com.unciv.models.ruleset.Victory v : gi.getRuleset().getVictories().values()) {
+                if (!first) sb.append(',');
+                first = false;
+                sb.append("{\"name\":").append(quote(v.getName()))
+                  .append(",\"enabled\":").append(gi.getGameParameters().getVictoryTypes().contains(v.getName()))
+                  .append('}');
+            }
+        } catch (Throwable t) {
+            return "{\"error\":{\"code\":\"INTERNAL\",\"message\":" + quote(String.valueOf(t)) + "}}";
+        }
+        return sb.append("]}").toString();
+    }
+
+    static String tileJson(GameInfo gi, Civilization c, Integer x, Integer y) {
+        if (x == null || y == null) return "{\"error\":{\"code\":\"BAD_PARAMS\",\"message\":\"需要 x 与 y\"}}";
+        Tile t = gi.getTileMap().get(new HexCoord(x, y));
+        if (t == null) return "{\"error\":{\"code\":\"UNKNOWN_ID\",\"message\":" + quote("没有这个格子") + "}}";
+        StringBuilder feat = new StringBuilder();
+        for (String f : t.getTerrainFeatures()) {
+            if (feat.length() > 0) feat.append(',');
+            feat.append(quote(f));
+        }
+        return "{\"x\":" + x + ",\"y\":" + y
+                + ",\"terrain\":" + quote(t.baseTerrain)
+                + ",\"features\":[" + feat + "]"
+                + ",\"explored\":" + t.isExplored(c)
+                + ",\"visible\":" + t.isVisible(c)
+                + ",\"resource\":" + (t.getResource() == null ? "null" : quote(t.getResource()))
+                + ",\"improvement\":" + (t.getImprovement() == null ? "null" : quote(t.getImprovement()))
+                + "}";
+    }
+
     static String diplomacyJson(GameInfo gi, Civilization c) {
         StringBuilder sb = new StringBuilder("{\"me\":" + quote(c.getCivName()) + ",\"known\":[");
         boolean first = true;
@@ -699,9 +784,15 @@ public class Agent {
         if (seed != 0L) mp.setSeed(seed);
 
         GameInfo gi = GameStarter.Companion.startNewGame(new GameSetupInfo(gp, mp));
+        // 默认把所有胜利条件打开（GameParameters 默认是空列表，等于全关）
+        try {
+            gi.getGameParameters().getVictoryTypes().clear();
+            gi.getGameParameters().getVictoryTypes().addAll(gi.getRuleset().getVictories().keySet());
+        } catch (Throwable ignored) { }
         gameInfo = gi;
         game.setGameInfo(gi);
         submitted.clear();
+        tokenToCiv.clear();   // 旧 token 不能跨局复用
         return stateJson(gi, gi.getCurrentPlayerCiv());
     }
 }

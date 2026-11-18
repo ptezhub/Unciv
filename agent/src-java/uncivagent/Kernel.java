@@ -67,8 +67,8 @@ public final class Kernel {
                 "{\"type\":\"object\",\"properties\":{\"unit\":{\"type\":\"string\"},\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"}},\"required\":[\"unit\",\"x\",\"y\"]}", "act");
         tool("found_city", "用移民建立城市。",
                 "{\"type\":\"object\",\"properties\":{\"unit\":{\"type\":\"string\"}},\"required\":[\"unit\"]}", "act");
-        tool("set_city_production", "设置城市的生产项目。",
-                "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"item\":{\"type\":\"string\"}},\"required\":[\"city\",\"item\"]}", "act");
+        tool("set_city_production", "设置城市的生产项目；count>1 时连续排入队列，避免造完变 Nothing。",
+                "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"item\":{\"type\":\"string\"},\"count\":{\"type\":\"integer\"}},\"required\":[\"city\",\"item\"]}", "act");
         tool("set_research", "设置当前研究目标。",
                 "{\"type\":\"object\",\"properties\":{\"tech\":{\"type\":\"string\"}},\"required\":[\"tech\"]}", "act");
         tool("attack", "用单位攻击指定格子上的敌方单位或城市。",
@@ -77,8 +77,8 @@ public final class Kernel {
                 "{\"type\":\"object\",\"properties\":{\"unit\":{\"type\":\"string\"},\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"}},\"required\":[\"unit\",\"x\",\"y\"]}", "act");
         tool("promote_unit", "给单位选择一个晋升。",
                 "{\"type\":\"object\",\"properties\":{\"unit\":{\"type\":\"string\"},\"promotion\":{\"type\":\"string\"}},\"required\":[\"unit\",\"promotion\"]}", "act");
-        tool("unit_action", "触发单位的通用动作，如 Fortify / Sleep / Explore / Automate / Pillage / Disband。",
-                "{\"type\":\"object\",\"properties\":{\"unit\":{\"type\":\"string\"},\"action\":{\"type\":\"string\"}},\"required\":[\"unit\",\"action\"]}", "act");
+        tool("unit_action", "触发单位的通用动作，如 Fortify / Sleep / Explore / Automate / Pillage / CreateImprovement。带 id 可指定具体目标（改良设施名、unique 等）。",
+                "{\"type\":\"object\",\"properties\":{\"unit\":{\"type\":\"string\"},\"action\":{\"type\":\"string\"},\"id\":{\"type\":\"string\"}},\"required\":[\"unit\",\"action\"]}", "act");
         tool("get_map", "读取指定中心点附近的已探索地块。",
                 "{\"type\":\"object\",\"properties\":{\"cx\":{\"type\":\"integer\"},\"cy\":{\"type\":\"integer\"},\"radius\":{\"type\":\"integer\"}},\"required\":[\"cx\",\"cy\"]}", "read");
         tool("get_events", "读取本回合的通知事件。",
@@ -89,6 +89,9 @@ public final class Kernel {
                 "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"focus\":{\"type\":\"string\"}},\"required\":[\"city\",\"focus\"]}", "act");
         tool("purchase_construction", "用金币购买城市建筑或单位。",
                 "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"item\":{\"type\":\"string\"}},\"required\":[\"city\",\"item\"]}", "act");
+        tool("get_victory_progress", "读取胜利条件与当前进度。", "{\"type\":\"object\",\"properties\":{}}", "read");
+        tool("get_tile", "读取单个地块的详情。",
+                "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"}},\"required\":[\"x\",\"y\"]}", "read");
         tool("get_diplomacy", "列出已知文明及其外交状态。", "{\"type\":\"object\",\"properties\":{}}", "read");
         tool("declare_war", "对某个文明宣战。",
                 "{\"type\":\"object\",\"properties\":{\"civ\":{\"type\":\"string\"}},\"required\":[\"civ\"]}", "act");
@@ -258,8 +261,15 @@ public final class Kernel {
             city.getCityConstructions().setCurrentConstruction(before);
             throw new Fail("NOT_AVAILABLE", "现在不能生产 " + item + "，已还原为 " + before);
         }
+        Integer count = Json.integer(params, "count");
+        int extra = count == null ? 1 : Math.max(1, Math.min(count, 20));
+        for (int i = 1; i < extra; i++) {
+            try {
+                city.getCityConstructions().addToQueue(item, null);
+            } catch (Throwable ignored) { }
+        }
         events.add("{\"type\":\"production_set\",\"city\":" + q("city-" + city.getId())
-                + ",\"item\":" + q(item) + "}");
+                + ",\"item\":" + q(item) + ",\"queued\":" + extra + "}");
     }
 
     private static void applyResearch(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
@@ -344,6 +354,7 @@ public final class Kernel {
         MapUnit unit = requireOwnUnit(gi, actor, target);
         String action = Json.str(params, "action");
         if (action == null) throw new Fail("BAD_PARAMS", "需要 action");
+        String actionId = Json.str(params, "id");
 
         UnitActionType type;
         try {
@@ -353,7 +364,7 @@ public final class Kernel {
         }
         boolean ok;
         try {
-            ok = UnitActions.INSTANCE.invokeUnitAction(unit, type, null);
+            ok = UnitActions.INSTANCE.invokeUnitAction(unit, type, actionId);
         } catch (Throwable e) {
             throw new Fail("ILLEGAL_TARGET", "执行失败: " + e.getMessage());
         }
@@ -574,6 +585,9 @@ public final class Kernel {
             }
             return sb.append("]}}").toString();
         }
+        if ("tools/call".equals(method) && gameInfo == null) {
+            return "{\"jsonrpc\":\"2.0\",\"id\":" + idJson + ",\"error\":{\"code\":-32000,\"message\":\"no game loaded\"}}";
+        }
         if ("tools/call".equals(method)) {
             Map<String, Object> params = Json.obj(req.get("params"));
             String name = Json.str(params, "name");
@@ -596,6 +610,9 @@ public final class Kernel {
             case "get_units": return Agent.unitsJson(gameInfo, actor);
             case "get_cities": return Agent.citiesJson(gameInfo, actor);
             case "get_city_details": return Agent.cityDetailsJson(gameInfo, actor, Json.str(args, "city"));
+            case "get_victory_progress": return Agent.victoryJson(gameInfo, actor);
+            case "get_tile": return Agent.tileJson(gameInfo, actor,
+                    Json.integer(args, "x"), Json.integer(args, "y"));
             case "get_diplomacy": return Agent.diplomacyJson(gameInfo, actor);
             case "get_policies": return Agent.policiesJson(gameInfo, actor);
             case "get_map": return Agent.mapJson(gameInfo, actor,
