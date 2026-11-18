@@ -78,6 +78,10 @@ com_crashlytics_export_strings.xml
 /ios-moe/build/
 /buildSrc/build
 
+# agent module (headless host)
+/agent/build/
+/agent-classes/
+
 /nbbuild/
 /android/nbbuild/
 /core/nbbuild/

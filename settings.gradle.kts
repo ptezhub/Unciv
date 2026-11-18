@@ -10,7 +10,7 @@ pluginManagement {
     }
 }
 
-include("desktop", "core", "tests", "server")
+include("desktop", "core", "tests", "server", "agent")
 
 // Browser support is opt-in so ordinary builds do not bootstrap browser toolchains.
 if (providers.gradleProperty("web").isPresent) {
