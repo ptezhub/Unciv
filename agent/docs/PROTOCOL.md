@@ -37,6 +37,7 @@ Contents:
 |---|---|---|---|
 | GET | `/health` | — | `{"ok":true}` |
 | GET | `/tools` | — | `{"tools":[{name,kind,description,schema}]}` |
+| GET | `/guide` | `?name&category` | `{"entries":[{name,category,steps,text}]}` |
 | GET | `/isalive` | — | `{"online":true}` |
 | any | `/auth` | `Authorization: Basic` | `{"ok":true,"user":"<user>"}` |
 | GET | `/files/{name}` | — | raw bytes, `text/plain` |
@@ -58,7 +59,9 @@ Contents:
 | GET | `/religion` | — | " |
 | GET | `/citystates` | — | " |
 | GET | `/spies` | — | " |
-| GET | `/tile` | `?x&y` | " |
+| GET | `/techs` | — | " |
+| GET | `/victory` | — | " |
+| GET | `/briefing` | — | " |
 | GET | `/actions` | `?unit=<int>` | `{unit,actions:[{type,title,available}],truncated}` |
 | POST | `/act` | `{type, unit?}` | legacy shim, see below |
 | POST | `/move` | `{unit,x,y}` | legacy shim |
@@ -188,7 +191,7 @@ candidates are there to be retried.
 
 ## Tool table
 
-43 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
+44 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
 drift from the code.
 
 Read (`kind: read`) — these are not intents; call the HTTP route or the MCP tool:
@@ -208,6 +211,7 @@ Read (`kind: read`) — these are not intents; call the HTTP route or the MCP to
 | `get_trade_offers` | `civ` (optional) | `GET /trade?civ` |
 | `get_techs` | — | `GET /techs` |
 | `get_briefing` | — | `GET /briefing` |
+| `get_guide` | `name?`, `category?` | `GET /guide` |
 | `get_religion` | — | `GET /religion` |
 | `get_city_states` | — | `GET /citystates` |
 | `get_spies` | — | `GET /spies` |
@@ -261,7 +265,7 @@ Names are exact. `UNKNOWN_ID` returns up to 8 substring matches, so `Monu` sugge
 | `initialize` | `protocolVersion: "2025-06-18"`, `capabilities.tools`, `serverInfo: {name:"unciv-agent",version:"0.1.0"}` |
 | `notifications/initialized` | HTTP `202`, empty body |
 | `ping` | `{}` |
-| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 43 entries |
+| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 44 entries |
 | `tools/call` | `{content:[{type:"text",text:"<tool JSON as a string>"}],isError:bool}` |
 | anything else | `-32601 Method not found` |
 
@@ -369,6 +373,12 @@ civilizations appear; the acting civilization is excluded.
 `GET /policies` — `{"adopted":[…],"culture":N,"cultureNeededForNextPolicy":M,"canAdoptPolicy":bool,"adoptableBranches":[…],"tree":[{branch,policies:[{name,adopted,requires,ready}]}]}`.
 `tree` covers every branch in the ruleset, so sub-policies are visible before the branch is
 opened; `ready` means prerequisites are met (culture is a separate question).
+
+`GET /guide` — the game's own tutorial and civilopedia articles, loaded from
+`jsons/Tutorials.json` at boot. Works without a loaded game:
+`{"entries":[{name,category,steps:[…],text}]}`. `steps` are the short in-game prompts, `text`
+is the full article. Filter with `?name=` or `?category=` (case-insensitive substring). This is
+the strategy material a model should get once, not every turn.
 
 `GET /briefing` — the whole turn in one read, meant to be handed to a model as the turn
 prompt. It aggregates what the client would show:

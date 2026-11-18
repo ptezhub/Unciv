@@ -112,6 +112,19 @@ The recipe that should work: two or three cities of production, artillery at 2 t
 spotter, gold per turn positive before queueing them, and a melee unit to walk in once the city
 is at zero. `capture_city` itself has only been exercised on its error path so far.
 
+## What the model is given
+
+Two different things, and they should not be confused:
+
+- `GET /guide` is the game's own tutorial plus civilopedia articles (61 entries, ~29k
+  characters), loaded from `jsons/Tutorials.json`. Hand it over once, up front, as reference.
+  It is the game's own words about what to build and why, not a strategy the harness invented.
+- `GET /briefing` is the turn state: one read per turn, nothing about strategy.
+
+Everything else is on demand. A model that wants a building's description, a unit's strength or
+a policy's prerequisites can read the ruleset JSON under `android/assets/jsons/`, or ask the
+host — but the harness should not pre-chew decisions for it.
+
 ## What this does not cover
 
 Game-state-dependent paths: capturing a city, launching a nuke, stealing a tech, upgrading a

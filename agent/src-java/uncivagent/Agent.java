@@ -126,6 +126,7 @@ public class Agent {
         } catch (Throwable t) {
             System.out.println("[unciv-agent] files 初始化失败: " + t);
         }
+        loadGuide();
         RulesetCache.INSTANCE.loadRulesets(true, false);
         System.out.println("[unciv-agent] 规则集加载完成，共 " + RulesetCache.INSTANCE.size() + " 个");
     }
@@ -227,6 +228,10 @@ public class Agent {
             // ---- 探活与管理 ----
             if (path.equals("/health")) { send(ex, 200, "{\"ok\":true}"); return; }
             if (path.equals("/tools")) { send(ex, 200, toolsJson()); return; }
+            if (path.equals("/guide")) {
+                send(ex, 200, guideJson(query(ex, "name"), query(ex, "category")));
+                return;
+            }
 
             if (path.equals("/admin/civs")) {
                 StringBuilder sb = new StringBuilder("{\"turn\":").append(need().getTurns()).append(",\"civs\":[");
@@ -1359,6 +1364,60 @@ public class Agent {
             }
         } catch (Throwable ignored) { }
         return false;
+    }
+
+    /** 游戏自带教程/百科条目，给 agent 当攻略参考 */
+    private static List<Object> guideEntries = new ArrayList<>();
+
+    private static void loadGuide() {
+        File f = new File("jsons/Tutorials.json");
+        if (!f.exists()) {
+            System.out.println("[unciv-agent] 没找到 jsons/Tutorials.json，/guide 会返回空");
+            return;
+        }
+        try {
+            String text = new String(Files.readAllBytes(f.toPath()), StandardCharsets.UTF_8);
+            Object parsed = Json.parseRelaxed(text);
+            guideEntries = Json.arr(parsed);
+            System.out.println("[unciv-agent] 载入教程条目 " + guideEntries.size() + " 条");
+        } catch (Throwable t) {
+            System.out.println("[unciv-agent] 教程载入失败: " + t);
+        }
+    }
+
+    static String guideJson(String nameFilter, String categoryFilter) {
+        StringBuilder sb = new StringBuilder("{\"entries\":[");
+        boolean first = true;
+        for (Object o : guideEntries) {
+            Map<String, Object> e = Json.obj(o);
+            String name = Json.str(e, "name");
+            String category = Json.str(e, "category");
+            if (nameFilter != null && (name == null || !name.toLowerCase().contains(nameFilter.toLowerCase()))) continue;
+            if (categoryFilter != null && (category == null || !category.toLowerCase().contains(categoryFilter.toLowerCase()))) continue;
+            if (!first) sb.append(',');
+            first = false;
+            sb.append("{\"name\":").append(name == null ? "null" : quote(name))
+              .append(",\"category\":").append(category == null ? "null" : quote(category));
+            List<Object> steps = Json.arr(e.get("steps"));
+            sb.append(",\"steps\":[");
+            for (int i = 0; i < steps.size(); i++) {
+                if (i > 0) sb.append(',');
+                sb.append(quote(String.valueOf(steps.get(i))));
+            }
+            sb.append(']');
+            List<Object> ctext = Json.arr(e.get("civilopediaText"));
+            StringBuilder body = new StringBuilder();
+            for (Object line : ctext) {
+                if (!(line instanceof Map)) continue;
+                String t = Json.str(Json.obj(line), "text");
+                if (t != null && !t.isEmpty()) {
+                    if (body.length() > 0) body.append("\n");
+                    body.append(t);
+                }
+            }
+            sb.append(",\"text\":").append(quote(body.toString())).append('}');
+        }
+        return sb.append("]}").toString();
     }
 
     static String techsJson(GameInfo gi, Civilization c) {

@@ -75,7 +75,7 @@ public final class Json {
         if (s.charAt(i) == '}') { i++; return m; }
         while (true) {
             ws();
-            String k = string();
+            String k = s.charAt(i) == '"' ? string() : bareKey();
             ws();
             if (s.charAt(i) != ':') throw new IllegalArgumentException("位置 " + i + " 期望冒号");
             i++;
@@ -101,6 +101,46 @@ public final class Json {
             if (c == ']') return l;
             if (c != ',') throw new IllegalArgumentException("位置 " + (i - 1) + " 期望逗号或右方括号");
         }
+    }
+
+    /** Unciv 的 jsons 允许不加引号的键，这里照读 */
+    private String bareKey() {
+        int start = i;
+        while (i < s.length()) {
+            char c = s.charAt(i);
+            if (Character.isLetterOrDigit(c) || c == '_' || c == '-' || c == '.') i++;
+            else break;
+        }
+        if (i == start) throw new IllegalArgumentException("位置 " + start + " 期望键名");
+        return s.substring(start, i);
+    }
+
+    /** 去掉 // 行注释（Unciv 的 json 里到处都是），字符串里的 // 不动 */
+    public static String stripComments(String text) {
+        StringBuilder out = new StringBuilder(text.length());
+        boolean inString = false;
+        for (int k = 0; k < text.length(); k++) {
+            char c = text.charAt(k);
+            if (inString) {
+                out.append(c);
+                if (c == '\\' && k + 1 < text.length()) { out.append(text.charAt(++k)); continue; }
+                if (c == '"') inString = false;
+                continue;
+            }
+            if (c == '"') { inString = true; out.append(c); continue; }
+            if (c == '/' && k + 1 < text.length() && text.charAt(k + 1) == '/') {
+                while (k < text.length() && text.charAt(k) != '\n') k++;
+                out.append('\n');
+                continue;
+            }
+            out.append(c);
+        }
+        return out.toString();
+    }
+
+    /** 宽容解析：先去注释，再按 Unciv 的裸键规则读 */
+    public static Object parseRelaxed(String text) {
+        return parse(stripComments(text));
     }
 
     private String string() {

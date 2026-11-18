@@ -235,6 +235,7 @@ def run_all(h):
     check("J", "J1 array args survive", "P0", lambda: mcp_arrays(h))
     check("J", "J2 mcp act matches http", "P1", lambda: mcp_act_parity(h))
     check("J", "J3 briefing complete", "P0", lambda: briefing_shape(h))
+    check("J", "J4 guide available", "P1", lambda: guide_shape(h))
 
     print("\nI failure cost")
     check("I", "I1 failed action is free", "P0", lambda: failed_action_free(h))
@@ -607,6 +608,17 @@ def mcp_arrays(h):
     out = mcp_call(h, "choose_beliefs", {"beliefs": ["No Such Belief"]})
     assert out["error"]["code"] in ("UNKNOWN_ID", "NOT_AVAILABLE"), out
     return True, "arrays and objects reach the kernel intact"
+
+
+def guide_shape(h):
+    status, g = h.get("/guide")
+    assert status == 200, f"/guide -> {status}"
+    assert g["entries"], "no tutorial entries"
+    names = [e["name"] for e in g["entries"]]
+    assert len(names) > 20, f"only {len(names)} entries"
+    _, one = h.get("/guide?name=New%20Game")
+    assert one["entries"] and one["entries"][0]["text"], "filter or text missing"
+    return True, f"{len(names)} entries, filter works"
 
 
 def briefing_shape(h):
