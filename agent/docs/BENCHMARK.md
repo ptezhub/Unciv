@@ -61,6 +61,30 @@ compared; `/state` echoes `seed` and `gameId` so a benchmark can record which ga
 purchase, malformed intent) must leave turn, gold, production, position and movement untouched.
 Plus an intent fuzz set and a latency floor (`/new` under 15s, a turn under 3s on a Duel map).
 
+## The other half: a game that actually runs
+
+`conformance.py` checks the interface. `play_smoke.py` checks that a whole game runs through
+it:
+
+```
+python3 agent/tests/play_smoke.py --port 8240 --turns 50 --players 3 --size Small
+```
+
+It starts its own host, plays N turns with a deliberately dumb heuristic (found a city, build
+the first available item from a fixed list, research the cheapest tech, walk military units
+outward, buy the cheapest purchasable), and prints one JSON object:
+
+```json
+{"turns_played": 50, "civ": "Persia", "cities": 1, "population": 5, "techs": 11,
+ "gold": 94, "happiness": 2, "units": 4, "known_civs": 4,
+ "requests": 341, "harness_errors": [], "ok": true}
+```
+
+`harness_errors` must stay empty — any 5xx or `INTERNAL` is a harness fault, not a playing
+mistake. The rest is the metric set to compare between models: turns survived, cities,
+population, techs, happiness, contacts. A model that plays badly should show worse numbers
+with `ok: true`; `ok: false` means the harness failed it.
+
 ## What this does not cover
 
 Game-state-dependent paths: capturing a city, launching a nuke, stealing a tech, upgrading a

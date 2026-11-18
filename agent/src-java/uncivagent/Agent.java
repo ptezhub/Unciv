@@ -308,6 +308,7 @@ public class Agent {
             if (path.equals("/trade")) { send(ex, 200, tradeOffersJson(need(), actor, query(ex, "civ"))); return; }
             if (path.equals("/religion")) { send(ex, 200, religionJson(need(), actor)); return; }
             if (path.equals("/techs")) { send(ex, 200, techsJson(need(), actor)); return; }
+            if (path.equals("/victory")) { send(ex, 200, victoryJson(need(), actor)); return; }
             if (path.equals("/citystates")) { send(ex, 200, cityStatesJson(need(), actor)); return; }
             if (path.equals("/spies")) { send(ex, 200, spiesJson(need(), actor)); return; }
             if (path.equals("/tile")) {
@@ -416,7 +417,7 @@ public class Agent {
                 || path.equals("/cities") || path.equals("/map") || path.equals("/events")
                 || path.equals("/diplomacy") || path.equals("/policies") || path.equals("/trade")
                 || path.equals("/religion") || path.equals("/citystates") || path.equals("/spies")
-                || path.equals("/techs")
+                || path.equals("/techs") || path.equals("/victory")
                 || path.equals("/tile")
                 || path.startsWith("/city/") || path.equals("/actions")
                 || path.equals("/act") || path.equals("/move") || path.equals("/endturn");
