@@ -51,8 +51,8 @@ import java.util.Map;
  */
 public final class Kernel {
 
-    /** 幂等键：同一 intent.id 只生效一次 */
-    private static final LinkedHashSet<String> appliedIds = new LinkedHashSet<>();
+    /** 幂等键：同一 intent.id 只生效一次；id 换了内容则报错，而不是静默丢掉 */
+    private static final LinkedHashMap<String, String> appliedIds = new LinkedHashMap<>();
 
     private Kernel() { }
 
@@ -181,8 +181,11 @@ public final class Kernel {
             return error("NOT_AN_ACTION", type + " 是只读工具，请用对应查询接口", null);
         }
 
-        if (id != null && appliedIds.contains(id)) {
-            return "{\"ok\":true,\"intent\":" + q(id) + ",\"duplicate\":true,\"events\":[]}";
+        String fingerprint = type + "|" + (target == null ? "" : target) + "|" + Json.write(params);
+        if (id != null && appliedIds.containsKey(id)) {
+            if (fingerprint.equals(appliedIds.get(id)))
+                return "{\"ok\":true,\"intent\":" + q(id) + ",\"duplicate\":true,\"events\":[]}";
+            return error("ID_REUSED", "这个 id 已经用在另一个动作上了，换一个 id", null);
         }
 
         if (turn != null && turn != gameInfo.getTurns()) {
@@ -227,9 +230,9 @@ public final class Kernel {
         }
 
         if (id != null) {
-            appliedIds.add(id);
+            appliedIds.put(id, fingerprint);
             if (appliedIds.size() > 1000) {
-                Iterator<String> it = appliedIds.iterator();
+                Iterator<String> it = appliedIds.keySet().iterator();
                 it.next();
                 it.remove();
             }
@@ -432,6 +435,20 @@ public final class Kernel {
             if (p.getX() == x && p.getY() == y) hit = at;
         }
         if (hit == null) {
+            Tile tgt = tileAt(gi, x, y);
+            if (tgt != null) {
+                Civilization owner = null;
+                try {
+                    if (tgt.isCityCenter() && tgt.getCity() != null) {
+                        owner = tgt.getCity().getCiv();
+                    } else {
+                        Iterator<MapUnit> uit = tgt.getUnits().iterator();
+                        if (uit.hasNext()) owner = uit.next().getCiv();
+                    }
+                } catch (Throwable ignored) { }
+                if (owner != null && owner != actor && !actor.isAtWarWith(owner))
+                    throw new Fail("NOT_AVAILABLE", "还没和 " + owner.getCivName() + " 宣战，先 declare_war", candidates);
+            }
             throw new Fail("ILLEGAL_TARGET", "打不到 " + x + "," + y + (stayOnTile ? "（只能原地轰击）" : ""), candidates);
         }
 
@@ -544,6 +561,13 @@ public final class Kernel {
         } catch (Throwable ignored) { }
         if (buyable == null) throw new Fail("NOT_AVAILABLE", item + " 不能购买（不是可购买的项目）");
         if (price == null) throw new Fail("NOT_AVAILABLE", item + " 不能用 " + stat.name() + " 购买");
+        boolean alreadyBuilt = false;
+        try {
+            alreadyBuilt = city.getCityConstructions().isBuilt(item);
+        } catch (Throwable ignored) { }
+        if (alreadyBuilt)
+            throw new Fail("NOT_AVAILABLE", item + " 已经建过了");
+
         boolean purchasable = true;
         try {
             purchasable = buyable.isPurchasable(city.getCityConstructions());
@@ -629,10 +653,37 @@ public final class Kernel {
     }
 
     private static void applyEndTurn(GameInfo gi, Civilization actor, UncivGameRef ref, List<String> events) {
+        // 交回合前把"你大概忘了"的东西说出来，避免因为没看见而白丢一回合
+        List<String> warnings = new ArrayList<>();
+        int idle = 0;
+        Iterator<MapUnit> uit = actor.getUnits().getCivUnits().iterator();
+        while (uit.hasNext()) {
+            MapUnit u = uit.next();
+            if (u.getCurrentMovement() > 0.1f && !u.isTransported()) idle++;
+        }
+        if (idle > 0) warnings.add(idle + " 个单位还有移动力");
+        int idleCities = 0;
+        for (City c : actor.getCities()) {
+            if (c.isPuppet() || c.isInResistance()) continue;
+            String item = c.getCityConstructions().getCurrentConstruction().getName();
+            if (item == null || item.isEmpty() || item.equals("Nothing")) idleCities++;
+        }
+        if (idleCities > 0) warnings.add(idleCities + " 座城没有在生产任何东西");
+        int pending = 0;
+        for (com.unciv.logic.civilization.PopupAlert a : actor.getPopupAlerts())
+            if (a.getType() == com.unciv.logic.civilization.AlertType.CityConquered) pending++;
+        if (pending > 0) warnings.add(pending + " 座刚打下的城还没决定吞并/傀儡");
+
         int before = gi.getTurns();
         ref.advanceTurn(gi, actor);
+        StringBuilder w = new StringBuilder();
+        for (String s : warnings) {
+            if (w.length() > 0) w.append(',');
+            w.append(q(s));
+        }
         events.add("{\"type\":\"turn_advanced\",\"from\":" + before + ",\"to\":" + gi.getTurns()
-                + ",\"currentCiv\":" + q(actor.getCivName()) + "}");
+                + ",\"currentCiv\":" + q(actor.getCivName())
+                + ",\"warnings\":[" + w + "]}");
     }
 
     /** City 上 workedTiles 属性与 getWorkedTiles() 函数在 JVM 里同名，Java 里取不了，这里换个路子。 */

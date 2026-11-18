@@ -316,9 +316,9 @@ public class Agent {
             }
 
             if (path.equals("/actions") && method.equals("GET")) {
-                String u = query(ex, "unit");
+                Integer u = intq(ex, "unit");
                 if (u == null) { send(ex, 400, err("需要 ?unit=<id>")); return; }
-                send(ex, 200, actionsJson(need(), actor, Integer.parseInt(u)));
+                send(ex, 200, actionsJson(need(), actor, u));
                 return;
             }
 
@@ -525,7 +525,12 @@ public class Agent {
 
     private static Integer intq(HttpExchange ex, String key) {
         String v = query(ex, key);
-        return v == null ? null : Integer.valueOf(v);
+        if (v == null || v.trim().isEmpty()) return null;
+        try {
+            return Integer.valueOf(v.trim());
+        } catch (NumberFormatException e) {
+            return null;   // 参数写错不该是 500，交给下游的默认值/校验
+        }
     }
 
     private static String quote(String s) { return Kernel.q(s); }
@@ -578,13 +583,20 @@ public class Agent {
                    .append(",\"name\":").append(cname == null ? "null" : quote(cname)).append('}');
         }
         String researching = c.getTech().currentTechnologyName();
+        long mapSeed = 0L;
+        try {
+            mapSeed = gi.getTileMap().getMapParameters().getSeed();
+        } catch (Throwable ignored) { }
         return "{\"turn\":" + gi.getTurns()
+                + ",\"seed\":" + mapSeed
+                + ",\"gameId\":" + quote(gi.getGameId())
                 + ",\"civ\":" + quote(c.getCivName())
                 + ",\"alive\":" + c.isAlive()
                 + ",\"defeated\":" + c.isDefeated()
                 + ",\"gold\":" + c.getGold()
                 + ",\"researching\":" + quote(researching == null ? "" : researching)
                 + ",\"techCount\":" + c.getTech().getTechsResearched().size()
+                + ",\"stats\":{" + civStatsJson(c) + "}"
                 + ",\"cities\":[" + cities + "]"
                 + ",\"units\":[" + units + "]"
                 + ",\"pendingCaptures\":[" + pending + "]}";
@@ -724,7 +736,27 @@ public class Agent {
                         ? "null" : quote(target.getReligion().getMajorityReligionName()))
                 + ",\"holyCityOf\":" + (target.getReligion().getReligionThisIsTheHolyCityOf() == null
                         ? "null" : quote(target.getReligion().getReligionThisIsTheHolyCityOf())) + "}"
+                + ",\"turnsToBuild\":" + turnsToBuild(target)
+                + ",\"purchasable\":" + purchasableJson(gi, target)
                 + ",\"buildable\":[" + buildable + "]}";
+    }
+
+    private static String civStatsJson(Civilization c) {
+        StringBuilder sb = new StringBuilder();
+        try {
+            com.unciv.models.stats.Stats st = c.getStats().getStatsForNextTurn();
+            sb.append("\"goldPerTurn\":").append(round1(st.getGold()))
+              .append(",\"sciencePerTurn\":").append(round1(st.getScience()))
+              .append(",\"culturePerTurn\":").append(round1(st.getCulture()))
+              .append(",\"faithPerTurn\":").append(round1(st.getFaith()))
+              .append(",\"productionPerTurn\":").append(round1(st.getProduction()))
+              .append(",\"foodPerTurn\":").append(round1(st.getFood()));
+            sb.append(",\"happiness\":").append(c.getStats().getHappiness());
+            sb.append(",\"unitSupply\":").append(c.getStats().getUnitSupply());
+        } catch (Throwable e) {
+            sb.append("\"error\":").append(quote(String.valueOf(e)));
+        }
+        return sb.toString();
     }
 
     private static String round1(float v) {
@@ -758,6 +790,54 @@ public class Agent {
             first = false;
             sb.append(quote(name));
         }
+        return sb.append(']').toString();
+    }
+
+    private static String turnsToBuild(City city) {
+        try {
+            String item = city.getCityConstructions().getCurrentConstruction().getName();
+            if (item == null || item.isEmpty() || item.equals("Nothing")) return "null";
+            int remaining = city.getCityConstructions().getRemainingWork(item, false);
+            float perTurn = city.getCityStats().getCurrentCityStats().getProduction();
+            if (perTurn <= 0.01f) return "null";
+            int turns = (int) Math.ceil(remaining / perTurn);
+            return String.valueOf(Math.max(turns, 0));
+        } catch (Throwable ignored) {
+            return "null";
+        }
+    }
+
+    /** 现在真的能买的项（含价格），省得 agent 反复试错 */
+    private static String purchasableJson(GameInfo gi, City city) {
+        StringBuilder sb = new StringBuilder("[");
+        boolean first = true;
+        try {
+            java.util.List<String> pool = new ArrayList<>();
+            pool.addAll(gi.getRuleset().getBuildings().keySet());
+            pool.addAll(gi.getRuleset().getUnits().keySet());
+            int shown = 0;
+            for (String name : pool) {
+                if (shown >= 20) break;
+                com.unciv.models.ruleset.IConstruction con = city.getCityConstructions().getConstruction$unciv_core(name);
+                if (!(con instanceof com.unciv.models.ruleset.INonPerpetualConstruction)) continue;
+                com.unciv.models.ruleset.INonPerpetualConstruction npc =
+                        (com.unciv.models.ruleset.INonPerpetualConstruction) con;
+                Integer gold = npc.getStatBuyCost(city, com.unciv.models.stats.Stat.Gold);
+                Integer faith = npc.getStatBuyCost(city, com.unciv.models.stats.Stat.Faith);
+                boolean goldOk = gold != null && city.getCityConstructions()
+                        .isConstructionPurchaseAllowed(npc, com.unciv.models.stats.Stat.Gold, gold);
+                boolean faithOk = faith != null && city.getCityConstructions()
+                        .isConstructionPurchaseAllowed(npc, com.unciv.models.stats.Stat.Faith, faith);
+                if (!goldOk && !faithOk) continue;
+                shown++;
+                if (!first) sb.append(',');
+                first = false;
+                sb.append("{\"item\":").append(quote(name));
+                if (goldOk) sb.append(",\"gold\":").append(gold);
+                if (faithOk) sb.append(",\"faith\":").append(faith);
+                sb.append('}');
+            }
+        } catch (Throwable ignored) { }
         return sb.append(']').toString();
     }
 
@@ -1090,6 +1170,13 @@ public class Agent {
 
     // ---------------- 新局 ----------------
 
+    private static java.util.Collection<com.unciv.models.ruleset.nation.Nation> gi_nations() {
+        try {
+            return com.unciv.models.ruleset.RulesetCache.INSTANCE.getVanillaRuleset().getNations().values();
+        } catch (Throwable ignored) { }
+        return java.util.Collections.emptyList();
+    }
+
     private static java.util.List<String> gi_eras(GameParameters gp) {
         java.util.List<String> out = new java.util.ArrayList<>();
         try {
@@ -1115,7 +1202,23 @@ public class Agent {
         }
         gp.setNumberOfCityStates(Math.max(0, players - 1));
         ArrayList<Player> ps = new ArrayList<>();
-        ps.add(new Player(civ == null ? "Random" : civ, PlayerType.Human, "agent0"));
+        String humanNation = civ;
+        if (humanNation == null || humanNation.equalsIgnoreCase("Random")) {
+            // 同一个 seed 必须给同一个文明，否则复现不了
+            ArrayList<String> majors = new ArrayList<>();
+            try {
+                for (com.unciv.models.ruleset.nation.Nation n : gi_nations()) {
+                    if (!n.isCityState() && !n.isBarbarian() && !n.isSpectator()) majors.add(n.getName());
+                }
+            } catch (Throwable ignored) { }
+            if (majors.isEmpty()) humanNation = "Random";
+            else {
+                java.util.Collections.sort(majors);
+                long s2 = seed == 0L ? 1L : Math.abs(seed);
+                humanNation = majors.get((int) (s2 % majors.size()));
+            }
+        }
+        ps.add(new Player(humanNation, PlayerType.Human, "agent0"));
         for (int i = 1; i < players; i++) {
             boolean isHuman = i < humans;
             ps.add(new Player("Random", isHuman ? PlayerType.Human : PlayerType.AI,
