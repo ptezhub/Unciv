@@ -308,6 +308,7 @@ public class Agent {
             if (path.equals("/trade")) { send(ex, 200, tradeOffersJson(need(), actor, query(ex, "civ"))); return; }
             if (path.equals("/religion")) { send(ex, 200, religionJson(need(), actor)); return; }
             if (path.equals("/techs")) { send(ex, 200, techsJson(need(), actor)); return; }
+            if (path.equals("/briefing")) { send(ex, 200, briefingJson(need(), actor)); return; }
             if (path.equals("/victory")) { send(ex, 200, victoryJson(need(), actor)); return; }
             if (path.equals("/citystates")) { send(ex, 200, cityStatesJson(need(), actor)); return; }
             if (path.equals("/spies")) { send(ex, 200, spiesJson(need(), actor)); return; }
@@ -417,7 +418,7 @@ public class Agent {
                 || path.equals("/cities") || path.equals("/map") || path.equals("/events")
                 || path.equals("/diplomacy") || path.equals("/policies") || path.equals("/trade")
                 || path.equals("/religion") || path.equals("/citystates") || path.equals("/spies")
-                || path.equals("/techs") || path.equals("/victory")
+                || path.equals("/techs") || path.equals("/victory") || path.equals("/briefing")
                 || path.equals("/tile")
                 || path.startsWith("/city/") || path.equals("/actions")
                 || path.equals("/act") || path.equals("/move") || path.equals("/endturn");
@@ -1143,6 +1144,209 @@ public class Agent {
               .append(",\"theyCanGive\":").append(Kernel.offersJson(tl.getTheirAvailableOffers()));
         }
         return sb.append('}').toString();
+    }
+
+    /**
+     * 一回合的完整简报：把客户端会呈现给玩家的东西合成一份，agent 每回合读这一条就够。
+     * 只讲事实，不给建议。
+     */
+    static String briefingJson(GameInfo gi, Civilization c) {
+        StringBuilder sb = new StringBuilder("{\"turn\":").append(gi.getTurns())
+                .append(",\"civ\":").append(quote(c.getCivName()));
+        try {
+            sb.append(",\"era\":").append(quote(c.getEra().getName()));
+        } catch (Throwable ignored) { sb.append(",\"era\":null"); }
+
+        int gold = c.getGold();
+        float gpt = 0f, sci = 0f, cult = 0f, faith = 0f;
+        int happiness = 0;
+        try {
+            com.unciv.models.stats.Stats st = c.getStats().getStatsForNextTurn();
+            gpt = st.getGold(); sci = st.getScience(); cult = st.getCulture(); faith = st.getFaith();
+            happiness = c.getStats().getHappiness();
+        } catch (Throwable ignored) { }
+        sb.append(",\"gold\":").append(gold)
+          .append(",\"goldPerTurn\":").append(round1(gpt))
+          .append(",\"sciencePerTurn\":").append(round1(sci))
+          .append(",\"culture\":").append(c.getPolicies().getStoredCulture())
+          .append(",\"culturePerTurn\":").append(round1(cult))
+          .append(",\"cultureForNextPolicy\":").append(c.getPolicies().getCultureNeededForNextPolicy())
+          .append(",\"faith\":").append(c.getReligionManager().getStoredFaith())
+          .append(",\"faithPerTurn\":").append(round1(faith))
+          .append(",\"happiness\":").append(happiness);
+
+        // 研究
+        String cur = c.getTech().currentTechnologyName();
+        int available = 0;
+        try {
+            for (String t : gi.getRuleset().getTechnologies().keySet())
+                if (c.getTech().canBeResearched(t)) available++;
+        } catch (Throwable ignored) { }
+        sb.append(",\"research\":{\"current\":").append(cur == null || cur.isEmpty() ? "null" : quote(cur))
+          .append(",\"turnsLeft\":");
+        if (cur == null || cur.isEmpty() || sci <= 0.01f) sb.append("null");
+        else {
+            try {
+                sb.append((int) Math.ceil(Math.max(0, c.getTech().remainingScienceToTech(cur)) / sci));
+            } catch (Throwable e) { sb.append("null"); }
+        }
+        sb.append(",\"available\":").append(available).append('}');
+
+        // 城市
+        sb.append(",\"cities\":[");
+        boolean firstCity = true;
+        for (City city : c.getCities()) {
+            if (!firstCity) sb.append(',');
+            firstCity = false;
+            String prod;
+            Integer turns = null;
+            try {
+                prod = city.getCityConstructions().getCurrentConstruction().getName();
+                if (prod != null && !prod.isEmpty() && !prod.equals("Nothing")) {
+                    float perTurn = city.getCityStats().getCurrentCityStats().getProduction();
+                    int remaining = city.getCityConstructions().getRemainingWork(prod, false);
+                    turns = perTurn <= 0.01f ? null : (int) Math.ceil(remaining / perTurn);
+                } else prod = null;
+            } catch (Throwable e) { prod = null; }
+            boolean underAttack = false;
+            try {
+                Iterator<Tile> nit = city.getCenterTile().getNeighbors().iterator();
+                while (nit.hasNext()) {
+                    if (hasForeignMilitary(nit.next(), c)) { underAttack = true; break; }
+                }
+            } catch (Throwable ignored) { }
+            sb.append("{\"id\":").append(quote("city-" + city.getId()))
+              .append(",\"name\":").append(quote(city.getName()))
+              .append(",\"pop\":").append(city.getPopulation().getPopulation())
+              .append(",\"at\":[").append(city.getLocation().getX()).append(',').append(city.getLocation().getY()).append(']')
+              .append(",\"foodPerTurn\":").append(round1(city.getCityStats().getCurrentCityStats().getFood()))
+              .append(",\"turnsToGrowth\":").append(city.getPopulation().getNumTurnsToNewPopulation() == null
+                      ? "null" : city.getPopulation().getNumTurnsToNewPopulation())
+              .append(",\"production\":").append(prod == null ? "null" : quote(prod))
+              .append(",\"turnsToBuild\":").append(turns == null ? "null" : turns)
+              .append(",\"isPuppet\":").append(city.isPuppet())
+              .append(",\"inResistance\":").append(city.isInResistance())
+              .append(",\"health\":").append(city.getHealth())
+              .append(",\"canBombard\":").append(city.canBombard())
+              .append(",\"enemyAdjacent\":").append(underAttack)
+              .append('}');
+        }
+        sb.append(']');
+
+        // 需要操作的单位
+        sb.append(",\"unitsNeedingOrders\":[");
+        boolean firstUnit = true;
+        Iterator<MapUnit> uit = c.getUnits().getCivUnits().iterator();
+        while (uit.hasNext()) {
+            MapUnit u = uit.next();
+            if (u.getCurrentMovement() <= 0.1f) continue;
+            if (!firstUnit) sb.append(',');
+            firstUnit = false;
+            HexCoord p = u.getTile().getPosition();
+            sb.append("{\"id\":").append(quote("unit-" + u.getId()))
+              .append(",\"name\":").append(quote(u.getName()))
+              .append(",\"x\":").append(p.getX()).append(",\"y\":").append(p.getY())
+              .append(",\"moves\":").append(u.getCurrentMovement())
+              .append(",\"military\":").append(u.isMilitary())
+              .append(",\"civilian\":").append(u.isCivilian())
+              .append(",\"canAttack\":").append(u.canAttack())
+              .append(",\"canPromote\":").append(u.getPromotions().canBePromoted())
+              .append('}');
+        }
+        sb.append(']');
+
+        // 外交 / 城邦
+        StringBuilder known = new StringBuilder();
+        StringBuilder cs = new StringBuilder();
+        boolean firstKnown = true, firstCs = true;
+        Iterator<Civilization> kit = c.getKnownCivs().iterator();
+        while (kit.hasNext()) {
+            Civilization o = kit.next();
+            if (o == c) continue;
+            com.unciv.logic.civilization.diplomacy.DiplomacyManager dm = c.getDiplomacyManager(o);
+            int influence = 0;
+            try {
+                if (o.isCityState() && o.getDiplomacyManager(c) != null)
+                    influence = (int) o.getDiplomacyManager(c).getInfluence();
+            } catch (Throwable ignored) { }
+            if (!firstKnown) known.append(',');
+            firstKnown = false;
+            known.append("{\"civ\":").append(quote(o.getCivName()))
+                 .append(",\"isCityState\":").append(o.isCityState())
+                 .append(",\"atWar\":").append(c.isAtWarWith(o))
+                 .append(",\"canDeclareWar\":").append(dm != null && dm.canDeclareWar())
+                 .append(",\"influence\":").append(influence)
+                 .append('}');
+            if (o.isCityState()) {
+                if (!firstCs) cs.append(',');
+                firstCs = false;
+                cs.append("{\"civ\":").append(quote(o.getCivName()))
+                  .append(",\"influence\":").append(influence)
+                  .append(",\"ally\":").append(o.getAllyCiv() == null ? "null" : quote(o.getAllyCiv().getCivName()))
+                  .append('}');
+            }
+        }
+        sb.append(",\"diplomacy\":{\"known\":[").append(known).append("]}");
+        sb.append(",\"cityStates\":[").append(cs).append(']');
+
+        // 宗教
+        sb.append(",\"religion\":{\"state\":").append(quote(c.getReligionManager().getReligionState().name()))
+          .append(",\"faith\":").append(c.getReligionManager().getStoredFaith())
+          .append(",\"hasFreeBeliefs\":").append(c.getReligionManager().hasFreeBeliefs())
+          .append('}');
+
+        // 待处理占城
+        StringBuilder pending = new StringBuilder();
+        for (com.unciv.logic.civilization.PopupAlert a : c.getPopupAlerts()) {
+            if (a.getType() != com.unciv.logic.civilization.AlertType.CityConquered) continue;
+            if (pending.length() > 0) pending.append(',');
+            pending.append(quote("city-" + a.getValue()));
+        }
+        sb.append(",\"pendingCaptures\":[").append(pending).append(']');
+
+        // 本回合通知
+        StringBuilder ev = new StringBuilder();
+        List<Notification> all = c.getNotifications();
+        int start = Math.max(0, all.size() - 25);
+        for (int i = start; i < all.size(); i++) {
+            if (i > start) ev.append(',');
+            ev.append("{\"category\":").append(quote(all.get(i).getCategory().name()))
+              .append(",\"text\":").append(quote(all.get(i).getText())).append('}');
+        }
+        sb.append(",\"events\":[").append(ev).append(']');
+
+        // 提醒
+        List<String> warnings = new ArrayList<>();
+        int idleCities = 0;
+        for (City city : c.getCities()) {
+            if (city.isPuppet() || city.isInResistance()) continue;
+            String item = city.getCityConstructions().getCurrentConstruction().getName();
+            if (item == null || item.isEmpty() || item.equals("Nothing")) idleCities++;
+        }
+        if (idleCities > 0) warnings.add(idleCities + " 座城没有在生产任何东西");
+        if (cur == null || cur.isEmpty()) warnings.add("没有在研究的科技");
+        if (gpt < 0 && gold >= 0) warnings.add("每回合亏 " + round1(gpt) + " 金币");
+        if (gold < 0) warnings.add("国库为负，单位会被解散");
+        if (pending.length() > 0) warnings.add("有刚打下的城还没决定吞并/傀儡");
+        if (happiness < 0) warnings.add("快乐为负（" + happiness + "），增长和产能会受影响");
+        StringBuilder w = new StringBuilder();
+        for (String s : warnings) {
+            if (w.length() > 0) w.append(',');
+            w.append(quote(s));
+        }
+        sb.append(",\"warnings\":[").append(w).append("]}");
+        return sb.toString();
+    }
+
+    private static boolean hasForeignMilitary(Tile t, Civilization c) {
+        try {
+            Iterator<MapUnit> it = t.getUnits().iterator();
+            while (it.hasNext()) {
+                MapUnit u = it.next();
+                if (u.getCiv() != c && u.isMilitary()) return true;
+            }
+        } catch (Throwable ignored) { }
+        return false;
     }
 
     static String techsJson(GameInfo gi, Civilization c) {

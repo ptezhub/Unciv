@@ -234,6 +234,7 @@ def run_all(h):
     print("\nJ mcp arguments")
     check("J", "J1 array args survive", "P0", lambda: mcp_arrays(h))
     check("J", "J2 mcp act matches http", "P1", lambda: mcp_act_parity(h))
+    check("J", "J3 briefing complete", "P0", lambda: briefing_shape(h))
 
     print("\nI failure cost")
     check("I", "I1 failed action is free", "P0", lambda: failed_action_free(h))
@@ -606,6 +607,24 @@ def mcp_arrays(h):
     out = mcp_call(h, "choose_beliefs", {"beliefs": ["No Such Belief"]})
     assert out["error"]["code"] in ("UNKNOWN_ID", "NOT_AVAILABLE"), out
     return True, "arrays and objects reach the kernel intact"
+
+
+def briefing_shape(h):
+    cid = h.ensure_city()
+    _, b = h.get("/briefing")
+    for field in ("turn", "civ", "gold", "goldPerTurn", "happiness", "research",
+                  "cities", "unitsNeedingOrders", "diplomacy", "religion",
+                  "pendingCaptures", "events", "warnings"):
+        assert field in b, f"briefing missing {field}"
+    _, state = h.get("/state")
+    assert b["turn"] == state["turn"], "turn disagrees with /state"
+    assert b["gold"] == state["gold"], "gold disagrees with /state"
+    assert len(b["cities"]) == len(state["cities"]), "city count disagrees"
+    assert any(c["id"] == cid for c in b["cities"]), "own city missing"
+    # 简报里的城市必须能直接拿去调用动作
+    city = next(c for c in b["cities"] if c["id"] == cid)
+    assert city["production"] is None or isinstance(city["production"], str), city
+    return True, f"{len(b['cities'])} cities, {len(b['unitsNeedingOrders'])} units need orders"
 
 
 def mcp_act_parity(h):

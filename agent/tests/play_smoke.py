@@ -108,32 +108,29 @@ def main():
 
         last_turn = -1
         for _ in range(args.turns):
-            state = bot.get("/state")
-            turn = state.get("turn", 0)
+            # 每回合只读这一条：简报就是喂给模型的提示词
+            brief = bot.get("/briefing")
+            turn = brief.get("turn", 0)
 
-            # 研究：挑最便宜的
-            if not state.get("researching"):
+            if brief["research"]["current"] is None:
                 techs = bot.get("/techs").get("available", [])
                 if techs:
                     bot.act("set_research", params={"tech": min(techs, key=lambda t: t["cost"])["name"]})
 
-            # 城市生产
-            for city in bot.get("/cities").get("cities", []):
-                detail = bot.get("/city/" + city["id"])
-                if detail.get("production") in (None, "", "Nothing"):
+            for city in brief["cities"]:
+                if city["production"] is None:
+                    detail = bot.get("/city/" + city["id"])
                     buildable = detail.get("buildable", [])
                     pick = next((b for b in BUILD_ORDER if b in buildable), None)
                     if pick:
                         bot.act("set_city_production", city["id"], {"item": pick, "count": 2})
-                # 有钱就买最便宜的
-                buys = sorted(detail.get("purchasable", []), key=lambda x: x.get("gold", 10 ** 9))
-                if buys and state.get("gold", 0) > buys[0].get("gold", 10 ** 9):
-                    bot.act("purchase_construction", city["id"], {"item": buys[0]["item"]})
+                if brief["gold"] > 200:
+                    detail = bot.get("/city/" + city["id"])
+                    buys = sorted(detail.get("purchasable", []), key=lambda x: x.get("gold", 10 ** 9))
+                    if buys and brief["gold"] > buys[0].get("gold", 10 ** 9):
+                        bot.act("purchase_construction", city["id"], {"item": buys[0]["item"]})
 
-            # 单位：有活干就往外走，没活干就守
-            for u in bot.get("/units").get("units", []):
-                if u["moves"] <= 0:
-                    continue
+            for u in brief["unitsNeedingOrders"]:
                 if u["civilian"]:
                     continue
                 bot.act("move_unit", u["id"], {"x": u["x"] + 4, "y": u["y"] - 2})

@@ -77,7 +77,8 @@ python3 agent/tests/play_smoke.py --port 8240 --turns 50 --players 3 --size Smal
 
 It starts its own host, plays N turns with a deliberately dumb heuristic (found a city, build
 the first available item from a fixed list, research the cheapest tech, walk military units
-outward, buy the cheapest purchasable), and prints one JSON object:
+outward, buy the cheapest purchasable), reading only `GET /briefing` per turn, and prints one
+JSON object:
 
 ```json
 {"turns_played": 50, "civ": "Persia", "cities": 1, "population": 5, "techs": 11,

@@ -127,6 +127,8 @@ public final class Kernel {
                 "{\"type\":\"object\",\"properties\":{\"civ\":{\"type\":\"string\"},\"give\":{\"type\":\"array\"},\"want\":{\"type\":\"array\"}},\"required\":[\"civ\"]}", "act");
         tool("respond_trade", "回应某个文明发来的交易请求：accept 为 true 成交，false 拒绝。",
                 "{\"type\":\"object\",\"properties\":{\"civ\":{\"type\":\"string\"},\"accept\":{\"type\":\"boolean\"},\"index\":{\"type\":\"integer\"}},\"required\":[\"civ\"]}", "act");
+        tool("get_briefing", "一回合的完整简报：资源、研究、城市、待操作单位、外交、宗教、事件、提醒。每回合读这一条就够。",
+                "{\"type\":\"object\",\"properties\":{}}", "read");
         tool("get_techs", "列出当前可研究的科技、造价和按当前科研速度的回合数。",
                 "{\"type\":\"object\",\"properties\":{}}", "read");        tool("get_religion", "读取宗教状态：信仰、万神殿/国教、已选与可选的信念。",
                 "{\"type\":\"object\",\"properties\":{}}", "read");
@@ -1590,6 +1592,7 @@ public final class Kernel {
                     Json.integer(args, "cx"), Json.integer(args, "cy"), Json.integer(args, "radius"));
             case "get_events": return Agent.eventsJson(gameInfo, actor, Json.integer(args, "limit"));
             case "get_trade_offers": return Agent.tradeOffersJson(gameInfo, actor, Json.str(args, "civ"));
+            case "get_briefing": return Agent.briefingJson(gameInfo, actor);
             case "get_techs": return Agent.techsJson(gameInfo, actor);
             case "get_religion": return Agent.religionJson(gameInfo, actor);
             case "get_city_states": return Agent.cityStatesJson(gameInfo, actor);

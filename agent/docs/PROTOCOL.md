@@ -188,7 +188,7 @@ candidates are there to be retried.
 
 ## Tool table
 
-42 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
+43 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
 drift from the code.
 
 Read (`kind: read`) — these are not intents; call the HTTP route or the MCP tool:
@@ -207,6 +207,7 @@ Read (`kind: read`) — these are not intents; call the HTTP route or the MCP to
 | `get_tile` | `x`, `y` | `GET /tile?x&y` |
 | `get_trade_offers` | `civ` (optional) | `GET /trade?civ` |
 | `get_techs` | — | `GET /techs` |
+| `get_briefing` | — | `GET /briefing` |
 | `get_religion` | — | `GET /religion` |
 | `get_city_states` | — | `GET /citystates` |
 | `get_spies` | — | `GET /spies` |
@@ -260,7 +261,7 @@ Names are exact. `UNKNOWN_ID` returns up to 8 substring matches, so `Monu` sugge
 | `initialize` | `protocolVersion: "2025-06-18"`, `capabilities.tools`, `serverInfo: {name:"unciv-agent",version:"0.1.0"}` |
 | `notifications/initialized` | HTTP `202`, empty body |
 | `ping` | `{}` |
-| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 42 entries |
+| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 43 entries |
 | `tools/call` | `{content:[{type:"text",text:"<tool JSON as a string>"}],isError:bool}` |
 | anything else | `-32601 Method not found` |
 
@@ -367,6 +368,31 @@ civilizations appear; the acting civilization is excluded.
 `GET /policies` — `{"adopted":[…],"culture":N,"cultureNeededForNextPolicy":M,"canAdoptPolicy":bool,"adoptableBranches":[…],"tree":[{branch,policies:[{name,adopted,requires,ready}]}]}`.
 `tree` covers every branch in the ruleset, so sub-policies are visible before the branch is
 opened; `ready` means prerequisites are met (culture is a separate question).
+
+`GET /briefing` — the whole turn in one read, meant to be handed to a model as the turn
+prompt. It aggregates what the client would show:
+
+```json
+{"turn":42,"civ":"Rome","era":"Classical era",
+ "gold":310,"goldPerTurn":9.0,"sciencePerTurn":14.0,
+ "culture":88,"culturePerTurn":3.0,"cultureForNextPolicy":45,
+ "faith":12,"faithPerTurn":2.0,"happiness":4,
+ "research":{"current":"Pottery","turnsLeft":3,"available":4},
+ "cities":[{"id","name","pop","at","foodPerTurn","turnsToGrowth","production","turnsToBuild",
+            "isPuppet","inResistance","health","canBombard","enemyAdjacent"}],
+ "unitsNeedingOrders":[{"id","name","x","y","moves","military","civilian","canAttack","canPromote"}],
+ "diplomacy":{"known":[{civ,isCityState,atWar,canDeclareWar,influence}]},
+ "cityStates":[{civ,influence,ally}],
+ "religion":{"state","faith","hasFreeBeliefs"},
+ "pendingCaptures":["city-…"],
+ "events":[{category,text}],
+ "warnings":["1 座城没有在生产任何东西","没有在研究的科技"]}
+```
+
+`unitsNeedingOrders` is only the units that still have movement, so an empty list means the
+turn is ready to end. `enemyAdjacent` is true when a foreign military unit stands next to a
+city. `warnings` is the same list `end_turn` returns, so a model that reads the briefing can
+act before it loses a turn.
 
 `GET /techs` — `{"researching","sciencePerTurn","available":[{name,cost,remaining,turns}]}`.
 Only techs whose prerequisites are satisfied are listed. `remaining` accounts for science
