@@ -57,6 +57,11 @@ radius out of range) must not produce 5xx.
 Starting *positions* come from `gameId`, which the engine randomises per game, so they are not
 compared; `/state` echoes `seed` and `gameId` so a benchmark can record which game it got.
 
+**J MCP arguments** — arrays and nested objects sent through MCP `tools/call` reach the kernel
+intact (a bad tile comes back as a coordinate, not as a stringified list), and an action run
+over MCP returns the same event shape as the same action over HTTP. This is the check that
+would have caught the earlier flattening bug.
+
 **I failure cost** — four failing actions in a row (bad move, unbuildable item, unaffordable
 purchase, malformed intent) must leave turn, gold, production, position and movement untouched.
 Plus an intent fuzz set and a latency floor (`/new` under 15s, a turn under 3s on a Duel map).

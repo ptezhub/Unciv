@@ -231,6 +231,10 @@ def run_all(h):
     print("\nH determinism")
     check("H", "H1 same seed", "P1", lambda: same_seed(h))
 
+    print("\nJ mcp arguments")
+    check("J", "J1 array args survive", "P0", lambda: mcp_arrays(h))
+    check("J", "J2 mcp act matches http", "P1", lambda: mcp_act_parity(h))
+
     print("\nI failure cost")
     check("I", "I1 failed action is free", "P0", lambda: failed_action_free(h))
     check("I", "I2 id reuse rejected", "P0", lambda: id_reuse(h))
@@ -578,6 +582,39 @@ def same_seed(h):
     tb = sorted((u["name"] for u in b["units"]))
     assert ta == tb, f"starting army differs: {ta} vs {tb}"
     return True, f"{a['civ']} on seed 777, same army"
+
+
+# ---------------- J ----------------
+
+def mcp_call(h, name, args):
+    status, d = h.post("/mcp", {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                "params": {"name": name, "arguments": args}})
+    assert status == 200, f"MCP {name} -> {status}"
+    assert "result" in d, d
+    return json.loads(d["result"]["content"][0]["text"])
+
+
+def mcp_arrays(h):
+    cid = h.ensure_city()
+    _, detail = h.get("/city/" + cid)
+    cx, cy = detail["at"]
+    # 数组参数必须原样到达内核：坏坐标应当被逐项拒绝，而不是被当成字符串
+    out = mcp_call(h, "set_worked_tiles", {"city": cid, "tiles": [[cx + 40, cy + 40]]})
+    assert out["error"]["code"] == "ILLEGAL_TARGET", out
+    assert f"{cx + 40},{cy + 40}" in out["error"]["message"], out
+    # 嵌套对象同理
+    out = mcp_call(h, "choose_beliefs", {"beliefs": ["No Such Belief"]})
+    assert out["error"]["code"] in ("UNKNOWN_ID", "NOT_AVAILABLE"), out
+    return True, "arrays and objects reach the kernel intact"
+
+
+def mcp_act_parity(h):
+    cid = h.ensure_city()
+    _, http = h.intent("set_city_production", cid, {"item": "Monument"})
+    mcp = mcp_call(h, "set_city_production", {"city": cid, "item": "Monument"})
+    assert http.get("ok") and mcp.get("ok"), f"{http} / {mcp}"
+    assert http["events"][0]["type"] == mcp["events"][0]["type"], "event types differ"
+    return True, "same event shape on both surfaces"
 
 
 # ---------------- I ----------------
