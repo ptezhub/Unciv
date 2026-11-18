@@ -143,6 +143,7 @@ Event types and their fields:
 | `specialists_set` | `city`, `specialists:{name:count}` |
 | `city_annexed` | `city`, `name` |
 | `city_captured` | `city`, `name`, `from`, `action`, `isPuppet` |
+| `city_bombarded` | `city`, `at`, `damageDealt`, `damageTaken` |
 | `turn_advanced` | `from`, `to`, `currentCiv`, `warnings:[string]` |
 
 `turn_advanced.warnings` is advisory and only covers things an agent commonly forgets: units
@@ -187,7 +188,7 @@ candidates are there to be retried.
 
 ## Tool table
 
-41 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
+42 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
 drift from the code.
 
 Read (`kind: read`) — these are not intents; call the HTTP route or the MCP tool:
@@ -233,6 +234,7 @@ Act (`kind: act`):
 | `gift_city_state` | `civ`, `gold` | gold gift for influence; `gold` defaults to 250 |
 | `pledge_protect` | `civ`, `protect?` | `protect:false` withdraws; the engine blocks withdrawal for 10 turns after pledging |
 | `set_worked_tiles` | `city`, `tiles[[x,y]]`, `lock?`, `autoFill?` | replaces the worked set; tiles must be workable by that city and the count may not exceed population. `lock` (default true) pins them, `autoFill` (default true) spends leftover population on the engine's own ranking |
+| `bombard_city` | `city`, `x`, `y` | the city's own ranged attack; free, once per turn, needs a target inside its bombard range |
 | `nuke` | `unit`, `x`, `y` | unit must be a nuclear weapon; target must pass `Nuke.mayUseNuke` (range, war status) |
 | `upgrade_unit` | `unit`, `to?` | `to` is required when several upgrades are listed |
 | `spy_move` | `spy`, `city?` | `spy` is a name or an index; `city` omitted or `hideout` recalls the spy |
@@ -258,7 +260,7 @@ Names are exact. `UNKNOWN_ID` returns up to 8 substring matches, so `Monu` sugge
 | `initialize` | `protocolVersion: "2025-06-18"`, `capabilities.tools`, `serverInfo: {name:"unciv-agent",version:"0.1.0"}` |
 | `notifications/initialized` | HTTP `202`, empty body |
 | `ping` | `{}` |
-| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 41 entries |
+| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 42 entries |
 | `tools/call` | `{content:[{type:"text",text:"<tool JSON as a string>"}],isError:bool}` |
 | anything else | `-32601 Method not found` |
 
@@ -317,7 +319,7 @@ civilization are reproducible from `seed`).
 `GET /units` — `{"units":[{id,name,x,y,hp,moves,maxMoves,canAttack,military,civilian,embarked,range,xp,canPromote,promotions:[…],canUpgradeTo:[…]}]}`.
 `canAttack` is the engine's own predicate; it does not mean a target is in range.
 `canUpgradeTo` lists only upgrades whose requirements are met right now, i.e. exactly what
-`upgrade_unit` would accept.
+`upgrade_unit` would accept. `availablePromotions` is filled only when `canPromote` is true.
 
 `GET /cities` — `{"cities":[{id,name,pop,x,y,production}]}`.
 
@@ -332,7 +334,8 @@ civilization are reproducible from `seed`).
  "avoidGrowth":false,"inResistance":false,
  "buildings":["Palace","Monument","Library"],
  "specialists":{"Scientist":1},"maxSpecialists":{"Scientist":2},"manualSpecialists":true,
- "turnsToGrowth":7,"foodToNextPop":24,"turnsToBuild":5,
+ "turnsToGrowth":7,"foodToNextPop":24,"turnsToBuild":5,"remainingWork":64,
+ "defense":52,"garrison":"Rifleman","canBombard":true,
  "purchasable":[{"item":"Worker","gold":220},{"item":"Temple","gold":300,"faith":200}],
  "religion":{"majority":"Buddhism","holyCityOf":"Buddhism"},
  "buildable":["Monument","Warrior",…]}

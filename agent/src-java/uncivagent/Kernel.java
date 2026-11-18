@@ -140,6 +140,8 @@ public final class Kernel {
                 "{\"type\":\"object\",\"properties\":{\"civ\":{\"type\":\"string\"},\"protect\":{\"type\":\"boolean\"}},\"required\":[\"civ\"]}", "act");
         tool("set_worked_tiles", "手动指定城市工作哪些地块；lock 锁定，autoFill 用剩余人口自动补。",
                 "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"tiles\":{\"type\":\"array\"},\"lock\":{\"type\":\"boolean\"},\"autoFill\":{\"type\":\"boolean\"}},\"required\":[\"city\",\"tiles\"]}", "act");
+        tool("bombard_city", "用城市自己的远程火力轰击范围内的敌人（每回合一次，不消耗单位）。",
+                "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"}},\"required\":[\"city\",\"x\",\"y\"]}", "act");
         tool("nuke", "用核武器打击指定格子。",
                 "{\"type\":\"object\",\"properties\":{\"unit\":{\"type\":\"string\"},\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"}},\"required\":[\"unit\",\"x\",\"y\"]}", "act");
         tool("upgrade_unit", "把单位升级到新兵种；有多个目标时用 to 指定。",
@@ -217,6 +219,7 @@ public final class Kernel {
                 case "pledge_protect": applyPledgeProtect(gameInfo, actor, target, params, events); break;
                 case "set_worked_tiles": applySetWorkedTiles(gameInfo, actor, target, params, events); break;
                 case "nuke": applyNuke(gameInfo, actor, target, params, events); break;
+                case "bombard_city": applyCityBombard(gameInfo, actor, target, params, events); break;
                 case "upgrade_unit": applyUpgradeUnit(gameInfo, actor, target, params, events); break;
                 case "spy_move": applySpyMove(gameInfo, actor, params, events); break;
                 case "set_city_specialists": applySetSpecialists(gameInfo, actor, target, params, events); break;
@@ -380,9 +383,14 @@ public final class Kernel {
         Ruleset rs = gi.getRuleset();
         if (!rs.getBuildings().containsKey(item) && !rs.getUnits().containsKey(item)) {
             List<String> candidates = new ArrayList<>();
+            String needle = item.toLowerCase();
             for (String k : rs.getBuildings().keySet()) {
-                if (k.toLowerCase().contains(item.toLowerCase())) candidates.add(k);
+                if (k.toLowerCase().contains(needle)) candidates.add(k);
                 if (candidates.size() >= 8) break;
+            }
+            for (String k : rs.getUnits().keySet()) {
+                if (candidates.size() >= 8) break;
+                if (k.toLowerCase().contains(needle)) candidates.add(k);
             }
             throw new Fail("UNKNOWN_ID", "没有这个可建造项: " + item, candidates);
         }
@@ -481,6 +489,19 @@ public final class Kernel {
             HexCoord p = at.getTileToAttack().getPosition();
             candidates.add(p.getX() + "," + p.getY());
             if (p.getX() == x && p.getY() == y) hit = at;
+        }
+        if (hit == null && stayOnTile) {
+            try {
+                if (!unit.getBaseUnit().isRanged() && !unit.getBaseUnit().isAirUnit()
+                        && !unit.isNuclearWeapon())
+                    throw new Fail("NOT_AVAILABLE", unit.getName() + " 不是远程单位，用 attack 而不是 bombard");
+                boolean mustSetUp = unit.hasUnique(
+                        com.unciv.models.ruleset.unique.UniqueType.MustSetUp, actor.getState(), false);
+                if (mustSetUp && !unit.isSetUpForSiege())
+                    throw new Fail("NOT_AVAILABLE", unit.getName() + " 要先架设：unit_action SetUp，然后才能 bombard");
+            } catch (Fail f) {
+                throw f;
+            } catch (Throwable ignored) { }
         }
         if (hit == null) {
             Tile tgt = tileAt(gi, x, y);
@@ -1128,6 +1149,37 @@ public final class Kernel {
                 + ",\"at\":[" + x + "," + y + "]}");
     }
 
+    // ---------- 城市开火 ----------
+
+    private static void applyCityBombard(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
+        City city = requireOwnCity(gi, actor, target);
+        Integer x = Json.integer(params, "x");
+        Integer y = Json.integer(params, "y");
+        if (x == null || y == null) throw new Fail("BAD_PARAMS", "需要 x 与 y");
+        if (!city.canBombard()) throw new Fail("NOT_AVAILABLE", city.getName() + " 现在不能开火（可能已经打过，或被围攻）");
+
+        com.unciv.logic.battle.CityCombatant combatant = new com.unciv.logic.battle.CityCombatant(city);
+        List<String> candidates = new ArrayList<>();
+        Tile hit = null;
+        Iterator<Tile> it = TargetHelper.INSTANCE.getBombardableTiles(city).iterator();
+        while (it.hasNext()) {
+            Tile t = it.next();
+            candidates.add(t.getPosition().getX() + "," + t.getPosition().getY());
+            if (t.getPosition().getX() == x && t.getPosition().getY() == y) hit = t;
+        }
+        if (hit == null)
+            throw new Fail("ILLEGAL_TARGET", "城市射程内没有这个目标（射程 " + city.getBombardRange() + "）", candidates);
+
+        com.unciv.logic.battle.AttackableTile at = new com.unciv.logic.battle.AttackableTile(
+                city.getCenterTile(), hit, 1f, com.unciv.logic.battle.Battle.INSTANCE.getMapCombatantOfTile(hit));
+        com.unciv.logic.battle.Battle.DamageDealt dmg =
+                com.unciv.logic.battle.Battle.INSTANCE.attackOrNuke(combatant, at);
+        events.add("{\"type\":\"city_bombarded\",\"city\":" + q("city-" + city.getId())
+                + ",\"at\":[" + x + "," + y + "]"
+                + ",\"damageDealt\":" + (dmg == null ? 0 : dmg.getAttackerDealt())
+                + ",\"damageTaken\":" + (dmg == null ? 0 : dmg.getDefenderDealt()) + "}");
+    }
+
     // ---------- 单位升级 ----------
 
     private static void applyUpgradeUnit(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
@@ -1530,6 +1582,7 @@ public final class Kernel {
             case "pledge_protect":
             case "set_worked_tiles":
             case "nuke":
+            case "bombard_city":
             case "upgrade_unit":
             case "spy_move":
             case "set_city_specialists":

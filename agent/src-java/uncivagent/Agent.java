@@ -645,6 +645,7 @@ public class Agent {
               .append(",\"range\":").append(u.getRange())
               .append(",\"xp\":").append(u.getPromotions().getXP())
               .append(",\"canPromote\":").append(u.getPromotions().canBePromoted())
+              .append(",\"availablePromotions\":" + availablePromotions(u))
               .append(",\"promotions\":[").append(promos).append(']')
               .append(",\"canUpgradeTo\":[").append(ups).append(']')
               .append('}');
@@ -742,6 +743,10 @@ public class Agent {
                 + ",\"holyCityOf\":" + (target.getReligion().getReligionThisIsTheHolyCityOf() == null
                         ? "null" : quote(target.getReligion().getReligionThisIsTheHolyCityOf())) + "}"
                 + ",\"turnsToBuild\":" + turnsToBuild(target)
+                + ",\"remainingWork\":" + remainingWork(target)
+                + ",\"defense\":" + cityDefense(target)
+                + ",\"garrison\":" + (target.getGarrison() == null ? "null" : quote(target.getGarrison().getName()))
+                + ",\"canBombard\":" + target.canBombard()
                 + ",\"purchasable\":" + purchasableJson(gi, target)
                 + ",\"buildable\":[" + buildable + "]}";
     }
@@ -778,6 +783,23 @@ public class Agent {
         return sb.toString();
     }
 
+    private static String availablePromotions(MapUnit u) {
+        StringBuilder sb = new StringBuilder("[");
+        try {
+            if (u.getPromotions().canBePromoted()) {
+                boolean first = true;
+                Iterator<com.unciv.models.ruleset.unit.Promotion> it =
+                        u.getPromotions().getAvailablePromotions().iterator();
+                while (it.hasNext()) {
+                    if (!first) sb.append(',');
+                    first = false;
+                    sb.append(quote(it.next().getName()));
+                }
+            }
+        } catch (Throwable ignored) { }
+        return sb.append(']').toString();
+    }
+
     private static String round1(float v) {
         return String.valueOf(Math.round(v * 10f) / 10f);
     }
@@ -810,6 +832,25 @@ public class Agent {
             sb.append(quote(name));
         }
         return sb.append(']').toString();
+    }
+
+    private static String remainingWork(City city) {
+        try {
+            String item = city.getCityConstructions().getCurrentConstruction().getName();
+            if (item == null || item.isEmpty() || item.equals("Nothing")) return "null";
+            return String.valueOf(city.getCityConstructions().getRemainingWork(item, false));
+        } catch (Throwable ignored) {
+            return "null";
+        }
+    }
+
+    private static String cityDefense(City city) {
+        try {
+            return String.valueOf(new com.unciv.logic.battle.CityCombatant(city)
+                    .getCityStrength(null, com.unciv.logic.battle.CombatAction.Defend));
+        } catch (Throwable ignored) {
+            return "null";
+        }
     }
 
     private static String turnsToBuild(City city) {
