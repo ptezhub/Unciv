@@ -136,6 +136,8 @@ object UnitActions {
         // Air units cannot escort
         if (unit.baseUnit.isAirUnit()) return
 
+        // Headless (agent host) 没有 WorldScreen，直接返回，不枚举护送动作
+        if (!GUI.isWorldLoaded()) return
         val worldScreen = GUI.getWorldScreen()
         val selectedUnits = worldScreen.bottomUnitTable.selectedUnits
         if (selectedUnits.size == 2) {
@@ -282,7 +284,7 @@ object UnitActions {
                 unit.due = !unit.due
                 // If it's on, skips to next unit due to worldScreen.switchToNextUnit() in activateAction
                 // We don't want to switch twice since then we skip units :)
-                if (!unit.due && !UncivGame.Current.settings.autoUnitCycle)
+                if (!unit.due && !UncivGame.Current.settings.autoUnitCycle && GUI.isWorldLoaded())
                     GUI.getWorldScreen().switchToNextUnit()
             }.takeIf { unit.hasMovement() },
             isCurrentAction = !unit.due
