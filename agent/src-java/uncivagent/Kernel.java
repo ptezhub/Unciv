@@ -314,6 +314,8 @@ public final class Kernel {
 
     private static void applyFoundCity(GameInfo gi, Civilization actor, String target, List<String> events) {
         MapUnit unit = requireOwnUnit(gi, actor, target);
+        if (unit.getCurrentMovement() <= 0.05f)
+            throw new Fail("NOT_AVAILABLE", unit.getName() + " 这回合没有移动力了，建城要 1 点移动力");
         int before = unit.getCiv().getCities().size();
         boolean ok;
         try {
@@ -484,12 +486,13 @@ public final class Kernel {
         }
 
         AttackableTile hit = null;
-        List<String> candidates = new ArrayList<>();
+        LinkedHashSet<String> seen = new LinkedHashSet<>();
         for (AttackableTile at : targets) {
             HexCoord p = at.getTileToAttack().getPosition();
-            candidates.add(p.getX() + "," + p.getY());
+            seen.add(p.getX() + "," + p.getY());
             if (p.getX() == x && p.getY() == y) hit = at;
         }
+        List<String> candidates = new ArrayList<>(seen);
         if (hit == null && stayOnTile) {
             try {
                 if (!unit.getBaseUnit().isRanged() && !unit.getBaseUnit().isAirUnit()
