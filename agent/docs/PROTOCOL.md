@@ -23,9 +23,10 @@ Contents:
 - The server runs with a `null` executor: requests are handled one at a time on the dispatch
   thread. No request ever observes a half-applied action, and there is no locking.
 - Identity: `Authorization: Bearer <token>` or `X-Agent-Token: <token>`. Tokens are issued by
-  `POST /admin/token` and map to a civilization name. With no token — or a token the host does
-  not know — the request runs as the current player's civilization (single-player mode). An
-  unknown token is not rejected.
+  `POST /admin/token` and map to a civilization name. Before any token exists the agent routes
+  run as the current player's civilization (single-player mode). Once at least one token exists
+  every agent route requires a known token: missing or unknown → `401 UNAUTHORIZED`. `POST /new`
+  clears all tokens, so tokens never carry over into the next game.
 - Object ids in the agent surface: `unit-<int>` (engine `MapUnit.id`), `city-<uuid>` (engine
   `City.id`), and bare civilization names. `/city/{id}` additionally accepts a raw city id or
   a city name.
@@ -53,11 +54,16 @@ Contents:
 | GET | `/events` | `?limit` | " |
 | GET | `/diplomacy` | — | " |
 | GET | `/policies` | — | " |
+| GET | `/trade` | `?civ` | " |
+| GET | `/religion` | — | " |
+| GET | `/citystates` | — | " |
+| GET | `/spies` | — | " |
+| GET | `/tile` | `?x&y` | " |
 | GET | `/actions` | `?unit=<int>` | `{unit,actions:[{type,title,available}],truncated}` |
 | POST | `/act` | `{type, unit?}` | legacy shim, see below |
 | POST | `/move` | `{unit,x,y}` | legacy shim |
 | POST | `/endturn` | — | same as `{"type":"end_turn"}` intent |
-| POST | `/new` | `{players,humans,difficulty,speed,civ,seed}` | state of the new game |
+| POST | `/new` | `{players,humans,difficulty,speed,civ,seed,era,size}` | state of the new game |
 | POST | `/load` | `{path}` | state |
 | POST | `/save` | `{path}` | `{"ok":true,"path":…}` |
 | * | anything else | — | `404 {"error":"没有这个接口: <path>"}` |
@@ -122,6 +128,15 @@ Event types and their fields:
 | `war_declared` | `civ` |
 | `peace_made` | `civ` |
 | `policy_adopted` | `policy` |
+| `trade_proposed` | `civ`, `give:[offer]`, `want:[offer]` |
+| `trade_accepted` / `trade_declined` | `civ`, `give:[offer]`, `want:[offer]` |
+| `beliefs_chosen` | `state`, `religion`, `beliefs:[name]` |
+| `city_state_gift` | `civ`, `gold`, `influenceGained`, `influence` |
+| `pledged_protection` / `withdrew_protection` | `civ` |
+| `worked_tiles_set` | `city`, `worked:[[x,y],…]` |
+| `nuke` | `unit`, `at:[x,y]` |
+| `unit_upgraded` | `unit`, `from`, `to`, `goldCost` |
+| `spy_moved` | `spy`, `to` |
 | `turn_advanced` | `from`, `to`, `currentCiv` |
 
 `turn_advanced` is emitted whenever `end_turn` was accepted, including when the host is still
@@ -160,7 +175,7 @@ candidates are there to be retried.
 
 ## Tool table
 
-24 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
+37 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
 drift from the code.
 
 Read (`kind: read`) — these are not intents; call the HTTP route or the MCP tool:
@@ -175,8 +190,12 @@ Read (`kind: read`) — these are not intents; call the HTTP route or the MCP to
 | `get_events` | `limit` | `GET /events` |
 | `get_diplomacy` | — | `GET /diplomacy` |
 | `get_policies` | — | `GET /policies` |
-| `get_victory_progress` | — | MCP only for now |
-| `get_tile` | `x`, `y` | MCP only for now |
+| `get_victory_progress` | — | MCP only |
+| `get_tile` | `x`, `y` | `GET /tile?x&y` |
+| `get_trade_offers` | `civ` (optional) | `GET /trade?civ` |
+| `get_religion` | — | `GET /religion` |
+| `get_city_states` | — | `GET /citystates` |
+| `get_spies` | — | `GET /spies` |
 
 Act (`kind: act`):
 
@@ -195,6 +214,15 @@ Act (`kind: act`):
 | `declare_war` | `civ` | must have met them and be allowed to declare |
 | `make_peace` | `civ` | must currently be at war |
 | `adopt_policy` | `policy` | must not be adopted already |
+| `propose_trade` | `civ`, `give[]`, `want[]` | each entry `{name,type?,amount?}`; only offers the engine itself lists for that pair are accepted, everything else comes back as `NOT_AVAILABLE` with the offending names. Replaces any offer already pending to that civ |
+| `respond_trade` | `civ`, `accept?`, `index?` | answers a request that civ sent us; `accept` defaults to `true`, `index` picks among several (`0` is the oldest) |
+| `choose_beliefs` | `beliefs[]`, `unit?`, `name?`, `displayName?` | pantheon / founding / enhancing in one call. With `unit` (a Great Prophet) the prophet is spent first. The count and types must match `mustChoose` from `get_religion` exactly |
+| `gift_city_state` | `civ`, `gold` | gold gift for influence; `gold` defaults to 250 |
+| `pledge_protect` | `civ`, `protect?` | `protect:false` withdraws; the engine blocks withdrawal for 10 turns after pledging |
+| `set_worked_tiles` | `city`, `tiles[[x,y]]`, `lock?`, `autoFill?` | replaces the worked set; tiles must be workable by that city and the count may not exceed population. `lock` (default true) pins them, `autoFill` (default true) spends leftover population on the engine's own ranking |
+| `nuke` | `unit`, `x`, `y` | unit must be a nuclear weapon; target must pass `Nuke.mayUseNuke` (range, war status) |
+| `upgrade_unit` | `unit`, `to?` | `to` is required when several upgrades are listed |
+| `spy_move` | `spy`, `city?` | `spy` is a name or an index; `city` omitted or `hideout` recalls the spy |
 
 Turn (`kind: turn`):
 
@@ -214,7 +242,7 @@ Names are exact. `UNKNOWN_ID` returns up to 8 substring matches, so `Monu` sugge
 | `initialize` | `protocolVersion: "2025-06-18"`, `capabilities.tools`, `serverInfo: {name:"unciv-agent",version:"0.1.0"}` |
 | `notifications/initialized` | HTTP `202`, empty body |
 | `ping` | `{}` |
-| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 24 entries |
+| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 37 entries |
 | `tools/call` | `{content:[{type:"text",text:"<tool JSON as a string>"}],isError:bool}` |
 | anything else | `-32601 Method not found` |
 
@@ -225,7 +253,9 @@ Names are exact. `UNKNOWN_ID` returns up to 8 substring matches, so `Monu` sugge
   that merely mentions `error` in a message can be flagged. Treat `isError` as a hint and read
   the payload.
 - `arguments` are flattened into an intent: `unit` / `city` / `civ` / `policy` becomes
-  `target`, the rest becomes `params`. So MCP and HTTP produce identical results.
+  `target`, the rest becomes `params` as real JSON, so nested arrays and objects
+  (`give`, `want`, `beliefs`, `tiles`) survive the trip unchanged. MCP and HTTP produce
+  identical results.
 
 The handshake is not free-standing: actor resolution runs before the MCP branch, so with no
 game loaded `initialize` returns a `500` error envelope. Load or create a game first.
@@ -268,7 +298,8 @@ engine's own predicate; it does not mean a target is in range.
 
 ```json
 {"city":"city-3f2a…","name":"Rome","pop":4,"at":[8,-1],"focus":"Default",
- "production":"Monument","queue":["Monument","Warrior"],"buildable":["Monument","Warrior",…]}
+ "production":"Monument","queue":["Monument","Warrior"],
+ "workedTiles":[[7,-1],[9,-1]],"buildable":["Monument","Warrior",…]}
 ```
 
 `buildable` is capped at 40 entries, filtered by `canAddToQueue`. Unknown id →
@@ -288,6 +319,23 @@ civilizations appear; the acting civilization is excluded.
 
 `GET /policies` — `{"adopted":[…],"adoptableBranches":[…]}`.
 
+`GET /trade?civ` — `{"pending":[{civ,give:[offer],want:[offer]}]}`; with `civ` also
+`"with"`, `"youCanGive"`, `"theyCanGive"`. `give` is what the other side hands over, `want`
+is what they ask for. An offer is `{name,type,amount,duration}`; `duration` is `-1` for
+one-shot items. Gold entries carry the whole treasury as `amount` — clamp it yourself.
+
+`GET /religion` — `{"enabled":false}` when the ruleset or starting era disables religion.
+Otherwise `{"enabled":true,"state":"None|Pantheon|FoundingReligion|Religion|EnhancingReligion|EnhancedReligion","faith","faithForPantheon","religion","beliefs":[{name,type}],"availableBeliefs":[{name,type}],"mustChoose":{type:count}}`.
+`mustChoose` is what the next `choose_beliefs` call has to supply.
+
+`GET /citystates` — `{"cityStates":[{civ,influence,ally,atWar,canPledgeProtection,giftInfluence:[{gold,influence}],quests:[{name,description,influence,turnsLeft}]}]}`.
+Only city-states the acting civilization has met appear. `influence` is read from the
+city-state's side of the relationship, which is where the engine keeps it. `turnsLeft` is
+`-1` for quests without a deadline.
+
+`GET /spies` — `{"spies":[{name,rank,action,turnsRemaining,city,cityId,setUp}]}`. `city` is
+`null` in the hideout. `action` is a `SpyAction` name.
+
 `GET /actions?unit=N` — `{"unit":"unit-N","actions":[{type,title,available}],"truncated":null}`.
 `type` is a `UnitActionType` name; `available` is whether invoking it would do something now.
 `truncated` is the exception class name if enumeration threw part-way, otherwise `null` —
@@ -300,8 +348,12 @@ means that civilization has ended its turn and the host is waiting for the rest.
 `token` a random UUID is generated. Tokens live in memory only; a restart invalidates them.
 
 `POST /new` — `players` (default 2), `humans` (default 1), `difficulty`, `speed`, `civ`,
-`seed`. Small map, city-states = `players - 1`, first player is `Human`, the rest alternate
-per `humans`. Returns the state projection. A non-zero `seed` makes the map reproducible.
+`seed`, `era`, `size`. Map size defaults to `Small` and accepts any `MapSize.Predefined`
+name (`Duel`, `Tiny`, `Small`, `Medium`, `Large`, `Huge`). `era` accepts a ruleset era name
+(`Ancient era` … `Future era`); it changes the starting techs and units, and eras that
+disable religion make `get_religion` return `{"enabled":false}`. City-states =
+`players - 1`, first player is `Human`, the rest alternate per `humans`. Returns the state
+projection. A non-zero `seed` makes the map reproducible.
 
 `POST /load` / `POST /save` — absolute server-side paths, no upload. `load` resets the
 submitted set; `save` writes the current `GameInfo`.
@@ -323,10 +375,13 @@ Clients should therefore treat "`turn_advanced` with `from == to`" as "waiting",
 
 ## Known gaps
 
-- No trade proposals, religion, espionage, city-state diplomacy, manual tile assignment,
-  nukes, or victory-progress reads.
+- Espionage exposes movement and status only: there is no way to start a coup, rig an
+  election, or pick a specific tech to steal — the engine chains those automatically after a
+  spy establishes a network.
+- No unit gifting, no city trading UI helpers, no "what would this civ accept" evaluation
+  endpoint. `propose_trade` validates against the engine's offer list but does not predict
+  whether the AI will say yes.
 - No per-civilization turn enforcement (`NOT_YOUR_TURN` is unimplemented).
-- Unknown tokens fall back to the current player instead of returning `401`.
 - Tokens and the idempotency set are in memory; a restart loses both.
 - One game per process. `/load` replaces it; there is no way to hold two.
 - `POST /save` writes whatever path the caller gives — there is no path sandbox. Run the host

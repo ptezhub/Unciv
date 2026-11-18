@@ -241,20 +241,11 @@ public class Agent {
             // ---- Agent 接口 ----
             Civilization actor = actorFor(ex);
 
-            boolean isAgentRoute = (path.equals("/intent") || path.equals("/state")
-                    || path.equals("/units") || path.equals("/cities") || path.equals("/map")
-                    || path.equals("/events") || path.equals("/diplomacy") || path.equals("/policies")
-                    || path.startsWith("/city/") || path.equals("/actions")
-                    || path.equals("/act") || path.equals("/move") || path.equals("/endturn"));
-            if (isAgentRoute && actor == null && !tokenToCiv.isEmpty()) {
+            if (isAgentPath(path) && actor == null && !tokenToCiv.isEmpty()) {
                 send(ex, 401, "{\"error\":{\"code\":\"UNAUTHORIZED\",\"message\":\"多文明模式必须带有效 token\"}}");
                 return;
             }
-            if (actor == null && (path.equals("/intent") || path.equals("/state")
-                    || path.equals("/units") || path.equals("/cities") || path.equals("/map")
-                    || path.equals("/events") || path.equals("/diplomacy") || path.equals("/policies")
-                    || path.startsWith("/city/") || path.equals("/actions")
-                    || path.equals("/act") || path.equals("/move") || path.equals("/endturn"))) {
+            if (actor == null && isAgentPath(path)) {
                 actor = need().getCurrentPlayerCiv();
             }
 
@@ -279,6 +270,14 @@ public class Agent {
             if (path.equals("/events")) { send(ex, 200, eventsJson(need(), actor, intq(ex, "limit"))); return; }
             if (path.equals("/diplomacy")) { send(ex, 200, diplomacyJson(need(), actor)); return; }
             if (path.equals("/policies")) { send(ex, 200, policiesJson(need(), actor)); return; }
+            if (path.equals("/trade")) { send(ex, 200, tradeOffersJson(need(), actor, query(ex, "civ"))); return; }
+            if (path.equals("/religion")) { send(ex, 200, religionJson(need(), actor)); return; }
+            if (path.equals("/citystates")) { send(ex, 200, cityStatesJson(need(), actor)); return; }
+            if (path.equals("/spies")) { send(ex, 200, spiesJson(need(), actor)); return; }
+            if (path.equals("/tile")) {
+                send(ex, 200, tileJson(need(), actor, intq(ex, "x"), intq(ex, "y")));
+                return;
+            }
             if (path.startsWith("/city/")) {
                 send(ex, 200, cityDetailsJson(need(), actor, path.substring(6)));
                 return;
@@ -332,7 +331,8 @@ public class Agent {
                 send(ex, 200, newGameJson(players == null ? 2 : players,
                         humans == null ? 1 : humans,
                         Json.str(b, "difficulty"), Json.str(b, "speed"),
-                        Json.str(b, "civ"), seed == null ? 0L : seed.longValue()));
+                        Json.str(b, "civ"), seed == null ? 0L : seed.longValue(),
+                        Json.str(b, "era"), Json.str(b, "size")));
                 return;
             }
             if (path.equals("/load") && method.equals("POST")) {
@@ -373,6 +373,16 @@ public class Agent {
             for (int i = 0; i < Math.min(3, st.length); i++) tb.append(" | ").append(st[i]);
             try { send(ex, 500, err(tb.toString())); } catch (Throwable ignored) { }
         }
+    }
+
+    private static boolean isAgentPath(String path) {
+        return path.equals("/intent") || path.equals("/state") || path.equals("/units")
+                || path.equals("/cities") || path.equals("/map") || path.equals("/events")
+                || path.equals("/diplomacy") || path.equals("/policies") || path.equals("/trade")
+                || path.equals("/religion") || path.equals("/citystates") || path.equals("/spies")
+                || path.equals("/tile")
+                || path.startsWith("/city/") || path.equals("/actions")
+                || path.equals("/act") || path.equals("/move") || path.equals("/endturn");
     }
 
     /** 旧的 /act 用驼峰名，Intent 用小写，这里做一次映射 */
@@ -620,7 +630,20 @@ public class Agent {
                 + ",\"focus\":" + quote(target.getCityFocus().name())
                 + ",\"production\":" + quote(target.getCityConstructions().getCurrentConstruction().getName())
                 + ",\"queue\":[" + queue + "]"
+                + ",\"workedTiles\":" + workedTilesJson(target)
                 + ",\"buildable\":[" + buildable + "]}";
+    }
+
+    private static String workedTilesJson(City city) {
+        StringBuilder sb = new StringBuilder("[");
+        boolean first = true;
+        for (Tile t : Kernel.workedTilesOf(city)) {
+            HexCoord p = t.getPosition();
+            if (!first) sb.append(',');
+            first = false;
+            sb.append('[').append(p.getX()).append(',').append(p.getY()).append(']');
+        }
+        return sb.append(']').toString();
     }
 
     static String mapJson(GameInfo gi, Civilization c, Integer cx, Integer cy, Integer radius) {
@@ -632,7 +655,7 @@ public class Agent {
         boolean first = true;
         for (int dx = -r; dx <= r; dx++) {
             for (int dy = -r; dy <= r; dy++) {
-                Tile t = gi.getTileMap().get(new HexCoord(centerX + dx, centerY + dy));
+                Tile t = Kernel.tileAt(gi, centerX + dx, centerY + dy);
                 if (t == null || !t.isExplored(c)) continue;
                 if (!first) sb.append(',');
                 first = false;
@@ -681,7 +704,7 @@ public class Agent {
 
     static String tileJson(GameInfo gi, Civilization c, Integer x, Integer y) {
         if (x == null || y == null) return "{\"error\":{\"code\":\"BAD_PARAMS\",\"message\":\"需要 x 与 y\"}}";
-        Tile t = gi.getTileMap().get(new HexCoord(x, y));
+        Tile t = Kernel.tileAt(gi, x, y);
         if (t == null) return "{\"error\":{\"code\":\"UNKNOWN_ID\",\"message\":" + quote("没有这个格子") + "}}";
         StringBuilder feat = new StringBuilder();
         for (String f : t.getTerrainFeatures()) {
@@ -730,6 +753,157 @@ public class Agent {
         return "{\"adopted\":[" + adopted + "],\"adoptableBranches\":[" + branches + "]}";
     }
 
+    static String tradeOffersJson(GameInfo gi, Civilization c, String withCiv) {
+        StringBuilder pending = new StringBuilder();
+        for (com.unciv.logic.trade.TradeRequest r : c.getTradeRequests()) {
+            Civilization from = gi.getCivilization(r.getRequestingCiv());
+            if (pending.length() > 0) pending.append(',');
+            pending.append("{\"civ\":").append(quote(from == null ? r.getRequestingCiv() : from.getCivName()))
+                   .append(",\"give\":").append(Kernel.offersJson(r.getTrade().getTheirOffers()))
+                   .append(",\"want\":").append(Kernel.offersJson(r.getTrade().getOurOffers()))
+                   .append('}');
+        }
+        StringBuilder sb = new StringBuilder("{\"pending\":[").append(pending).append(']');
+        if (withCiv != null) {
+            Civilization other = null;
+            for (Civilization x : gi.getCivilizations()) {
+                if (x == c) continue;
+                if (x.getCivName().equals(withCiv) || x.getCivID().equals(withCiv)) other = x;
+            }
+            if (other == null) {
+                return "{\"error\":{\"code\":\"UNKNOWN_ID\",\"message\":" + quote("没有这个文明: " + withCiv) + "}}";
+            }
+            com.unciv.logic.trade.TradeLogic tl = new com.unciv.logic.trade.TradeLogic(c, other);
+            sb.append(",\"with\":").append(quote(other.getCivName()))
+              .append(",\"youCanGive\":").append(Kernel.offersJson(tl.getOurAvailableOffers()))
+              .append(",\"theyCanGive\":").append(Kernel.offersJson(tl.getTheirAvailableOffers()));
+        }
+        return sb.append('}').toString();
+    }
+
+    static String religionJson(GameInfo gi, Civilization c) {
+        if (!gi.isReligionEnabled()) return "{\"enabled\":false}";
+        com.unciv.logic.civilization.managers.ReligionManager rm = c.getReligionManager();
+        com.unciv.models.Religion rel = rm.getReligion();
+
+        StringBuilder beliefs = new StringBuilder();
+        if (rel != null) {
+            Iterator<com.unciv.models.ruleset.Belief> it = rel.getAllBeliefsOrdered().iterator();
+            while (it.hasNext()) {
+                com.unciv.models.ruleset.Belief b = it.next();
+                if (beliefs.length() > 0) beliefs.append(',');
+                beliefs.append("{\"name\":").append(quote(b.getName()))
+                       .append(",\"type\":").append(quote(b.getType().name())).append('}');
+            }
+        }
+
+        java.util.HashSet<String> used = new java.util.HashSet<>();
+        for (com.unciv.models.Religion r : gi.getReligions().values()) {
+            Iterator<com.unciv.models.ruleset.Belief> it = r.getAllBeliefsOrdered().iterator();
+            while (it.hasNext()) used.add(it.next().getName());
+        }
+        StringBuilder available = new StringBuilder();
+        for (Map.Entry<String, com.unciv.models.ruleset.Belief> e : gi.getRuleset().getBeliefs().entrySet()) {
+            if (used.contains(e.getKey())) continue;
+            if (available.length() > 0) available.append(',');
+            available.append("{\"name\":").append(quote(e.getKey()))
+                     .append(",\"type\":").append(quote(e.getValue().getType().name())).append('}');
+        }
+
+        StringBuilder must = new StringBuilder("{");
+        try {
+            com.unciv.logic.civilization.managers.ReligionState state = rm.getReligionState();
+            com.unciv.models.Counter<com.unciv.models.ruleset.BeliefType> cnt;
+            if (state == com.unciv.logic.civilization.managers.ReligionState.None
+                    || state == com.unciv.logic.civilization.managers.ReligionState.Pantheon) {
+                must.append("\"Pantheon\":1");
+            } else {
+                cnt = state == com.unciv.logic.civilization.managers.ReligionState.EnhancingReligion
+                        ? rm.getBeliefsToChooseAtEnhancing() : rm.getBeliefsToChooseAtFounding();
+                boolean first = true;
+                for (Map.Entry<com.unciv.models.ruleset.BeliefType, Integer> e : cnt.entrySet()) {
+                    if (e.getValue() == null || e.getValue() <= 0) continue;
+                    if (!first) must.append(',');
+                    first = false;
+                    must.append(quote(e.getKey().name())).append(':').append(e.getValue());
+                }
+            }
+        } catch (Throwable ignored) { }
+        must.append('}');
+
+        return "{\"enabled\":true,\"state\":" + quote(rm.getReligionState().name())
+                + ",\"faith\":" + rm.getStoredFaith()
+                + ",\"faithForPantheon\":" + rm.faithForPantheon(0)
+                + ",\"religion\":" + (rel == null ? "null"
+                        : quote(rel.getDisplayName() == null ? rel.getName() : rel.getDisplayName()))
+                + ",\"beliefs\":[" + beliefs + "]"
+                + ",\"availableBeliefs\":[" + available + "]"
+                + ",\"mustChoose\":" + must + "}";
+    }
+
+    static String cityStatesJson(GameInfo gi, Civilization c) {
+        StringBuilder sb = new StringBuilder("{\"cityStates\":[");
+        boolean first = true;
+        for (Civilization cs : gi.getCivilizations()) {
+            if (!cs.isCityState() || !c.knows(cs)) continue;
+            if (!first) sb.append(',');
+            first = false;
+
+            com.unciv.logic.civilization.diplomacy.DiplomacyManager dm = cs.getDiplomacyManager(c);
+            int influence = dm == null ? 0 : (int) dm.getInfluence();
+            Civilization ally = cs.getAllyCiv();
+
+            sb.append("{\"civ\":").append(quote(cs.getCivName()))
+              .append(",\"influence\":").append(influence)
+              .append(",\"ally\":").append(ally == null ? "null" : quote(ally.getCivName()))
+              .append(",\"atWar\":").append(c.isAtWarWith(cs))
+              .append(",\"canPledgeProtection\":").append(cs.getCityStateFunctions().otherCivCanPledgeProtection(c))
+              .append(",\"giftInfluence\":[");
+            int[] tiers = {250, 500, 1000};
+            for (int i = 0; i < tiers.length; i++) {
+                if (i > 0) sb.append(',');
+                int gain = cs.getCityStateFunctions().influenceGainedByGift(c, tiers[i]);
+                sb.append("{\"gold\":").append(tiers[i]).append(",\"influence\":").append(gain).append('}');
+            }
+            sb.append("],\"quests\":[");
+            boolean firstQuest = true;
+            try {
+                Iterator<com.unciv.logic.civilization.managers.quests.AssignedQuest> it =
+                        cs.getQuestManager().getAssignedQuestsFor(c).iterator();
+                while (it.hasNext()) {
+                    com.unciv.logic.civilization.managers.quests.AssignedQuest aq = it.next();
+                    if (!firstQuest) sb.append(',');
+                    firstQuest = false;
+                    sb.append("{\"name\":").append(quote(aq.getQuestName()))
+                      .append(",\"description\":").append(quote(aq.getDescription()))
+                      .append(",\"influence\":").append((int) aq.getInfluence())
+                      .append(",\"turnsLeft\":").append(aq.doesExpire() ? aq.getRemainingTurns() : -1)
+                      .append('}');
+                }
+            } catch (Throwable ignored) { }
+            sb.append("]}");
+        }
+        return sb.append("]}").toString();
+    }
+
+    static String spiesJson(GameInfo gi, Civilization c) {
+        StringBuilder sb = new StringBuilder("{\"spies\":[");
+        boolean first = true;
+        for (com.unciv.models.Spy s : c.getEspionageManager().getSpyList()) {
+            if (!first) sb.append(',');
+            first = false;
+            City loc = s.getCityOrNull();
+            sb.append("{\"name\":").append(quote(s.getName()))
+              .append(",\"rank\":").append(s.getRank())
+              .append(",\"action\":").append(quote(s.getAction().name()))
+              .append(",\"turnsRemaining\":").append(s.getTurnsRemainingForAction())
+              .append(",\"city\":").append(loc == null ? "null" : quote(loc.getName()))
+              .append(",\"cityId\":").append(loc == null ? "null" : quote("city-" + loc.getId()))
+              .append(",\"setUp\":").append(s.isSetUp()).append('}');
+        }
+        return sb.append("]}").toString();
+    }
+
     private static MapUnit findUnit(GameInfo gi, Civilization c, int id) {
         Iterator<MapUnit> it = c.getUnits().getCivUnits().iterator();
         while (it.hasNext()) {
@@ -765,10 +939,29 @@ public class Agent {
 
     // ---------------- 新局 ----------------
 
-    private static String newGameJson(int players, int humans, String difficulty, String speed, String civ, long seed) {
+    private static java.util.List<String> gi_eras(GameParameters gp) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        try {
+            for (com.unciv.models.ruleset.tech.Era e : com.unciv.UncivGame.Current.getGameInfo().getRuleset().getEras().values())
+                out.add(e.getName());
+        } catch (Throwable ignored) { }
+        if (out.isEmpty()) {
+            for (String s : new String[]{"Ancient era","Classical era","Medieval era","Renaissance era",
+                    "Industrial era","Modern era","Atomic era","Information era","Future era"}) out.add(s);
+        }
+        return out;
+    }
+
+    private static String newGameJson(int players, int humans, String difficulty, String speed, String civ, long seed, String era, String size) {
         GameParameters gp = new GameParameters();
         if (difficulty != null) gp.setDifficulty(difficulty);
         if (speed != null) gp.setSpeed(speed);
+        if (era != null) {
+            String match = null;
+            for (String name : gi_eras(gp)) if (name.equalsIgnoreCase(era)) match = name;
+            if (match == null) return "{\"error\":{\"code\":\"UNKNOWN_ID\",\"message\":" + quote("没有这个时代: " + era) + "}}";
+            gp.setStartingEra(match);
+        }
         gp.setNumberOfCityStates(Math.max(0, players - 1));
         ArrayList<Player> ps = new ArrayList<>();
         ps.add(new Player(civ == null ? "Random" : civ, PlayerType.Human, "agent0"));
@@ -780,7 +973,12 @@ public class Agent {
         gp.setPlayers(ps);
 
         MapParameters mp = new MapParameters();
-        mp.setMapSize(new MapSize(MapSize.Predefined.Small));
+        MapSize.Predefined preset = MapSize.Predefined.Small;
+        if (size != null) {
+            for (MapSize.Predefined p : MapSize.Predefined.values())
+                if (p.name().equalsIgnoreCase(size)) preset = p;
+        }
+        mp.setMapSize(new MapSize(preset));
         if (seed != 0L) mp.setSeed(seed);
 
         GameInfo gi = GameStarter.Companion.startNewGame(new GameSetupInfo(gp, mp));

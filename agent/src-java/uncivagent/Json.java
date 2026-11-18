@@ -138,4 +138,67 @@ public final class Json {
         if (n.isEmpty()) throw new IllegalArgumentException("位置 " + start + " 不是数字");
         return Double.valueOf(n);
     }
+
+    // ---------- 序列化（只给 MCP 参数回填用） ----------
+
+    public static String write(Object o) {
+        StringBuilder sb = new StringBuilder();
+        writeTo(sb, o);
+        return sb.toString();
+    }
+
+    private static void writeTo(StringBuilder sb, Object o) {
+        if (o == null) { sb.append("null"); return; }
+        if (o instanceof String) { quoteTo(sb, (String) o); return; }
+        if (o instanceof Boolean) { sb.append(o); return; }
+        if (o instanceof Number) {
+            double d = ((Number) o).doubleValue();
+            if (d == Math.rint(d) && !Double.isInfinite(d)) sb.append((long) d);
+            else sb.append(d);
+            return;
+        }
+        if (o instanceof Map) {
+            sb.append('{');
+            boolean first = true;
+            for (Map.Entry<?, ?> e : ((Map<?, ?>) o).entrySet()) {
+                if (!first) sb.append(',');
+                first = false;
+                quoteTo(sb, String.valueOf(e.getKey()));
+                sb.append(':');
+                writeTo(sb, e.getValue());
+            }
+            sb.append('}');
+            return;
+        }
+        if (o instanceof Iterable) {
+            sb.append('[');
+            boolean first = true;
+            for (Object v : (Iterable<?>) o) {
+                if (!first) sb.append(',');
+                first = false;
+                writeTo(sb, v);
+            }
+            sb.append(']');
+            return;
+        }
+        quoteTo(sb, String.valueOf(o));
+    }
+
+    private static void quoteTo(StringBuilder sb, String s) {
+        sb.append('"');
+        for (int k = 0; k < s.length(); k++) {
+            char ch = s.charAt(k);
+            switch (ch) {
+                case '"': sb.append("\\\""); break;
+                case '\\': sb.append("\\\\"); break;
+                case '\n': sb.append("\\n"); break;
+                case '\r': sb.append("\\r"); break;
+                case '\t': sb.append("\\t"); break;
+                default:
+                    if (ch < 0x20) sb.append(String.format("\\u%04x", (int) ch));
+                    else sb.append(ch);
+            }
+        }
+        sb.append('"');
+    }
 }

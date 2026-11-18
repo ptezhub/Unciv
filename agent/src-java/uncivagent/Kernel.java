@@ -17,7 +17,26 @@ import com.unciv.logic.map.tile.Tile;
 import com.unciv.models.UnitActionType;
 import com.unciv.models.ruleset.Ruleset;
 
+import com.unciv.logic.trade.Trade;
+import com.unciv.logic.trade.TradeLogic;
+import com.unciv.logic.trade.TradeOffer;
+import com.unciv.logic.trade.TradeOfferType;
+import com.unciv.logic.trade.TradeOffersList;
+import com.unciv.logic.trade.TradeRequest;
+import com.unciv.logic.civilization.diplomacy.CityStateFunctions;
+import com.unciv.logic.civilization.managers.ReligionManager;
+import com.unciv.logic.civilization.managers.ReligionState;
+import com.unciv.logic.map.mapunit.PossibleUpgrade;
+import com.unciv.logic.battle.MapUnitCombatant;
+import com.unciv.logic.battle.Nuke;
+import com.unciv.models.ruleset.BeliefType;
+import com.unciv.models.Counter;
+import com.unciv.models.Religion;
+import com.unciv.models.Spy;
+import com.unciv.models.ruleset.Belief;
+
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -102,6 +121,32 @@ public final class Kernel {
                 "{\"type\":\"object\",\"properties\":{\"policy\":{\"type\":\"string\"}},\"required\":[\"policy\"]}", "act");
         tool("end_turn", "结束本回合。单人模式下由宿主直接推进。",
                 "{\"type\":\"object\",\"properties\":{}}", "turn");
+        tool("get_trade_offers", "读取待回应的交易请求；带 civ 时还列出与该文明互相可交易的项。",
+                "{\"type\":\"object\",\"properties\":{\"civ\":{\"type\":\"string\"}}}", "read");
+        tool("propose_trade", "向某个文明提出交易。give 是你给出去的，want 是你想要的；每项 {name,type,amount}。",
+                "{\"type\":\"object\",\"properties\":{\"civ\":{\"type\":\"string\"},\"give\":{\"type\":\"array\"},\"want\":{\"type\":\"array\"}},\"required\":[\"civ\"]}", "act");
+        tool("respond_trade", "回应某个文明发来的交易请求：accept 为 true 成交，false 拒绝。",
+                "{\"type\":\"object\",\"properties\":{\"civ\":{\"type\":\"string\"},\"accept\":{\"type\":\"boolean\"},\"index\":{\"type\":\"integer\"}},\"required\":[\"civ\"]}", "act");
+        tool("get_religion", "读取宗教状态：信仰、万神殿/国教、已选与可选的信念。",
+                "{\"type\":\"object\",\"properties\":{}}", "read");
+        tool("choose_beliefs", "选信念：万神殿、立国教（带 unit 用大先知）或强化宗教。beliefs 是信念名数组。",
+                "{\"type\":\"object\",\"properties\":{\"unit\":{\"type\":\"string\"},\"beliefs\":{\"type\":\"array\"},\"name\":{\"type\":\"string\"},\"displayName\":{\"type\":\"string\"}},\"required\":[\"beliefs\"]}", "act");
+        tool("get_city_states", "列出已遇到的城邦：影响力、盟友、任务、送礼可得影响力。",
+                "{\"type\":\"object\",\"properties\":{}}", "read");
+        tool("gift_city_state", "给城邦送金币换影响力。",
+                "{\"type\":\"object\",\"properties\":{\"civ\":{\"type\":\"string\"},\"gold\":{\"type\":\"integer\"}},\"required\":[\"civ\"]}", "act");
+        tool("pledge_protect", "承诺保护或撤回对城邦的保护。",
+                "{\"type\":\"object\",\"properties\":{\"civ\":{\"type\":\"string\"},\"protect\":{\"type\":\"boolean\"}},\"required\":[\"civ\"]}", "act");
+        tool("set_worked_tiles", "手动指定城市工作哪些地块；lock 锁定，autoFill 用剩余人口自动补。",
+                "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"},\"tiles\":{\"type\":\"array\"},\"lock\":{\"type\":\"boolean\"},\"autoFill\":{\"type\":\"boolean\"}},\"required\":[\"city\",\"tiles\"]}", "act");
+        tool("nuke", "用核武器打击指定格子。",
+                "{\"type\":\"object\",\"properties\":{\"unit\":{\"type\":\"string\"},\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"}},\"required\":[\"unit\",\"x\",\"y\"]}", "act");
+        tool("upgrade_unit", "把单位升级到新兵种；有多个目标时用 to 指定。",
+                "{\"type\":\"object\",\"properties\":{\"unit\":{\"type\":\"string\"},\"to\":{\"type\":\"string\"}},\"required\":[\"unit\"]}", "act");
+        tool("get_spies", "列出间谍：位置、当前动作、剩余回合。",
+                "{\"type\":\"object\",\"properties\":{}}", "read");
+        tool("spy_move", "把间谍派到某个城市（别人城里会自动建网并开始偷科技），city 留空回总部。",
+                "{\"type\":\"object\",\"properties\":{\"spy\":{\"type\":\"string\"},\"city\":{\"type\":\"string\"}},\"required\":[\"spy\"]}", "act");
     }
 
     public static Map<String, Tool> tools() { return TOOLS; }
@@ -155,6 +200,15 @@ public final class Kernel {
                 case "make_peace": applyMakePeace(gameInfo, actor, params, events); break;
                 case "adopt_policy": applyAdoptPolicy(gameInfo, actor, params, events); break;
                 case "end_turn": applyEndTurn(gameInfo, actor, ref, events); break;
+                case "propose_trade": applyProposeTrade(gameInfo, actor, params, events); break;
+                case "respond_trade": applyRespondTrade(gameInfo, actor, params, events); break;
+                case "choose_beliefs": applyChooseBeliefs(gameInfo, actor, target, params, events); break;
+                case "gift_city_state": applyGiftCityState(gameInfo, actor, params, events); break;
+                case "pledge_protect": applyPledgeProtect(gameInfo, actor, params, events); break;
+                case "set_worked_tiles": applySetWorkedTiles(gameInfo, actor, target, params, events); break;
+                case "nuke": applyNuke(gameInfo, actor, target, params, events); break;
+                case "upgrade_unit": applyUpgradeUnit(gameInfo, actor, target, params, events); break;
+                case "spy_move": applySpyMove(gameInfo, actor, params, events); break;
                 default: return error("UNKNOWN_ACTION", "动作未实现: " + type, null);
             }
         } catch (Fail f) {
@@ -202,7 +256,7 @@ public final class Kernel {
         Integer y = Json.integer(params, "y");
         if (x == null || y == null) throw new Fail("BAD_PARAMS", "需要 x 与 y");
 
-        Tile dest = gi.getTileMap().get(new HexCoord(x, y));
+        Tile dest = tileAt(gi, x, y);
         if (dest == null) throw new Fail("ILLEGAL_TARGET", "没有这个格子: " + x + "," + y);
 
         HexCoord from = unit.getTile().getPosition();
@@ -239,6 +293,32 @@ public final class Kernel {
         }
     }
 
+    /** 小地图边缘外 TileMap.get 会抛异常，统一收口。 */
+    static Tile tileAt(GameInfo gi, int x, int y) {
+        try {
+            return gi.getTileMap().get(new HexCoord(x, y));
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    static List<String> buildableNow(GameInfo gi, City city) {
+        List<String> out = new ArrayList<>();
+        Ruleset rs = gi.getRuleset();
+        List<String> pool = new ArrayList<>();
+        pool.addAll(rs.getBuildings().keySet());
+        pool.addAll(rs.getUnits().keySet());
+        for (String name : pool) {
+            if (out.size() >= 25) break;
+            try {
+                com.unciv.models.ruleset.IConstruction con = city.getCityConstructions().getConstruction$unciv_core(name);
+                if (con != null && city.getCityConstructions().canAddToQueue(con,
+                        city.getCityConstructions().getConstructionQueue())) out.add(name);
+            } catch (Throwable ignored) { }
+        }
+        return out;
+    }
+
     private static void applyProduction(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
         City city = requireOwnCity(gi, actor, target);
         String item = Json.str(params, "item");
@@ -254,13 +334,21 @@ public final class Kernel {
             throw new Fail("UNKNOWN_ID", "没有这个可建造项: " + item, candidates);
         }
 
-        String before = city.getCityConstructions().getCurrentConstruction().getName();
-        city.getCityConstructions().setCurrentConstruction(item);
-        String now = city.getCityConstructions().getCurrentConstruction().getName();
-        if (!now.equals(item)) {
-            city.getCityConstructions().setCurrentConstruction(before);
-            throw new Fail("NOT_AVAILABLE", "现在不能生产 " + item + "，已还原为 " + before);
+        // 先按引擎自己的规则验一遍：setCurrentConstruction 对不可建造项不会报错，只会让城市空转
+        com.unciv.models.ruleset.IConstruction con = null;
+        try {
+            con = city.getCityConstructions().getConstruction$unciv_core(item);
+        } catch (Throwable ignored) { }
+        boolean buildable = false;
+        if (con != null) {
+            try {
+                buildable = city.getCityConstructions().canAddToQueue(con, java.util.Collections.emptyList());
+            } catch (Throwable ignored) { }
         }
+        if (!buildable)
+            throw new Fail("NOT_AVAILABLE", "现在不能生产 " + item + "（缺科技/资源/前置）", buildableNow(gi, city));
+
+        city.getCityConstructions().setCurrentConstruction(item);
         Integer count = Json.integer(params, "count");
         int extra = count == null ? 1 : Math.max(1, Math.min(count, 20));
         for (int i = 1; i < extra; i++) {
@@ -478,6 +566,471 @@ public final class Kernel {
                 + ",\"currentCiv\":" + q(actor.getCivName()) + "}");
     }
 
+    /** City 上 workedTiles 属性与 getWorkedTiles() 函数在 JVM 里同名，Java 里取不了，这里换个路子。 */
+    static List<Tile> workedTilesOf(City city) {
+        List<Tile> out = new ArrayList<>();
+        Iterator<Tile> it = city.getWorkableTiles().iterator();
+        while (it.hasNext()) {
+            Tile t = it.next();
+            if (city.isWorked(t)) out.add(t);
+        }
+        return out;
+    }
+
+    // ---------- 交易 ----------
+
+    static String offersJson(Iterable<TradeOffer> offers) {
+        StringBuilder sb = new StringBuilder("[");
+        boolean first = true;
+        for (TradeOffer o : offers) {
+            if (!first) sb.append(',');
+            first = false;
+            sb.append("{\"name\":").append(q(o.getName()))
+              .append(",\"type\":").append(q(o.getType().name()))
+              .append(",\"amount\":").append(o.getAmount())
+              .append(",\"duration\":").append(o.getDuration()).append('}');
+        }
+        return sb.append(']').toString();
+    }
+
+    static String quotedList(List<String> values) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < values.size(); i++) {
+            if (i > 0) sb.append(',');
+            sb.append(q(values.get(i)));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 把 {"name":..,"type":..,"amount":..} 落到 staged 里。
+     * 只接受 TradeLogic 当场算出来的可用项，避免造出引擎不认的报价。
+     */
+    private static void stageOffer(TradeOffersList available, TradeOffersList staged, Object spec, List<String> bad) {
+        Map<String, Object> m = Json.obj(spec);
+        String name = Json.str(m, "name");
+        if (name == null) { bad.add("<缺 name>"); return; }
+        String typeName = Json.str(m, "type");
+        Integer amount = Json.integer(m, "amount");
+
+        TradeOffer found = null;
+        for (TradeOffer o : available) {
+            if (!o.getName().equals(name)) continue;
+            if (typeName != null && !o.getType().name().equalsIgnoreCase(typeName)) continue;
+            found = o;
+            break;
+        }
+        if (found == null) {
+            bad.add(typeName == null ? name : name + " (" + typeName + ")");
+            return;
+        }
+
+        int amt = amount == null ? Math.max(1, found.getAmount()) : amount;
+        if (amt <= 0) amt = 1;
+        switch (found.getType()) {
+            case Gold:
+            case Gold_Per_Turn:
+            case Luxury_Resource:
+            case Strategic_Resource:
+            case Stockpiled_Resource:
+                amt = Math.min(amt, Math.max(1, found.getAmount()));
+                break;
+            default:
+                amt = 1;
+        }
+        staged.add(new TradeOffer(found.getName(), found.getType(), amt, found.getDuration()));
+    }
+
+    private static void applyProposeTrade(GameInfo gi, Civilization actor, Map<String, Object> params, List<String> events) {
+        Civilization other = requireOtherCiv(gi, actor, Json.str(params, "civ"));
+        if (actor.getDiplomacyManager(other) == null)
+            throw new Fail("NOT_AVAILABLE", "还没遇到 " + other.getCivName());
+
+        TradeLogic tl = new TradeLogic(actor, other);
+        List<String> bad = new ArrayList<>();
+        for (Object o : Json.arr(params.get("give")))
+            stageOffer(tl.getOurAvailableOffers(), tl.getCurrentTrade().getOurOffers(), o, bad);
+        for (Object o : Json.arr(params.get("want")))
+            stageOffer(tl.getTheirAvailableOffers(), tl.getCurrentTrade().getTheirOffers(), o, bad);
+        if (!bad.isEmpty())
+            throw new Fail("NOT_AVAILABLE", "这些不在可交易范围内: " + String.join("、", bad), bad);
+
+        Trade trade = tl.getCurrentTrade();
+        if (trade.getOurOffers().isEmpty() && trade.getTheirOffers().isEmpty())
+            throw new Fail("BAD_PARAMS", "give 和 want 都是空的");
+
+        other.getTradeRequests().removeIf(r -> actor.getCivID().equals(r.getRequestingCiv()));
+        other.getTradeRequests().add(new TradeRequest(actor.getCivID(), trade.reverse()));
+        actor.getCache().updateCivResources();
+
+        events.add("{\"type\":\"trade_proposed\",\"civ\":" + q(other.getCivName())
+                + ",\"give\":" + offersJson(trade.getOurOffers())
+                + ",\"want\":" + offersJson(trade.getTheirOffers()) + "}");
+    }
+
+    private static void applyRespondTrade(GameInfo gi, Civilization actor, Map<String, Object> params, List<String> events) {
+        Civilization other = requireOtherCiv(gi, actor, Json.str(params, "civ"));
+        Object acc = params.get("accept");
+        boolean accept = !(acc instanceof Boolean) || (Boolean) acc;
+        Integer idxParam = Json.integer(params, "index");
+        int idx = idxParam == null ? 0 : idxParam;
+
+        List<TradeRequest> mine = new ArrayList<>();
+        for (TradeRequest r : actor.getTradeRequests())
+            if (other.getCivID().equals(r.getRequestingCiv())) mine.add(r);
+        if (mine.isEmpty())
+            throw new Fail("NOT_AVAILABLE", other.getCivName() + " 没有待回应的交易");
+        if (idx < 0 || idx >= mine.size())
+            throw new Fail("BAD_PARAMS", "index 越界，共有 " + mine.size() + " 条");
+
+        TradeRequest req = mine.get(idx);
+        String give = offersJson(req.getTrade().getTheirOffers());
+        String want = offersJson(req.getTrade().getOurOffers());
+
+        if (accept) {
+            TradeLogic tl = new TradeLogic(actor, other);
+            tl.getCurrentTrade().set(req.getTrade());
+            try {
+                tl.acceptTrade(true);
+            } catch (Throwable e) {
+                throw new Fail("NOT_AVAILABLE", "成交失败: " + e.getMessage());
+            }
+        } else {
+            req.decline(actor);
+        }
+        actor.getTradeRequests().remove(req);
+
+        events.add("{\"type\":\"" + (accept ? "trade_accepted" : "trade_declined") + "\",\"civ\":"
+                + q(other.getCivName()) + ",\"give\":" + give + ",\"want\":" + want + "}");
+    }
+
+    // ---------- 宗教 ----------
+
+    private static List<Belief> resolveBeliefs(GameInfo gi, List<Object> raw) {
+        Ruleset rs = gi.getRuleset();
+        List<Belief> out = new ArrayList<>();
+        List<String> bad = new ArrayList<>();
+        for (Object o : raw) {
+            String name = o instanceof String ? (String) o : null;
+            Belief b = name == null ? null : rs.getBeliefs().get(name);
+            if (b == null) { bad.add(String.valueOf(o)); continue; }
+            out.add(b);
+        }
+        if (!bad.isEmpty()) {
+            List<String> cand = new ArrayList<>();
+            for (String k : rs.getBeliefs().keySet()) {
+                for (String b : bad) {
+                    if (k.toLowerCase().contains(b.toLowerCase())) { cand.add(k); break; }
+                }
+                if (cand.size() >= 10) break;
+            }
+            throw new Fail("UNKNOWN_ID", "没有这些信念: " + String.join("、", bad), cand);
+        }
+        return out;
+    }
+
+    private static Map<String, Integer> expectedBeliefs(ReligionManager rm, ReligionState state) {
+        Map<String, Integer> expected = new LinkedHashMap<>();
+        if (state == ReligionState.None || state == ReligionState.Pantheon) {
+            expected.put(BeliefType.Pantheon.name(), 1);
+            return expected;
+        }
+        Counter<BeliefType> counter = state == ReligionState.EnhancingReligion
+                ? rm.getBeliefsToChooseAtEnhancing()
+                : rm.getBeliefsToChooseAtFounding();
+        for (Map.Entry<BeliefType, Integer> e : counter.entrySet()) {
+            if (e.getValue() != null && e.getValue() > 0) expected.put(e.getKey().name(), e.getValue());
+        }
+        return expected;
+    }
+
+    private static void applyChooseBeliefs(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
+        if (!gi.isReligionEnabled()) throw new Fail("NOT_AVAILABLE", "这个规则集没开宗教");
+        ReligionManager rm = actor.getReligionManager();
+
+        // 带 unit 时先把大先知用掉，一步完成立教
+        String unitRef = target != null ? target : Json.str(params, "unit");
+        if (unitRef != null && rm.getReligionState() != ReligionState.FoundingReligion) {
+            MapUnit prophet = requireOwnUnit(gi, actor, unitRef);
+            boolean ok;
+            try {
+                ok = UnitActions.INSTANCE.invokeUnitAction(prophet, UnitActionType.FoundReligion, null);
+            } catch (Throwable e) {
+                throw new Fail("NOT_AVAILABLE", "立教失败: " + e.getMessage());
+            }
+            if (!ok) throw new Fail("NOT_AVAILABLE", prophet.getName() + " 现在不能立教");
+        }
+
+        List<Belief> chosen = resolveBeliefs(gi, Json.arr(params.get("beliefs")));
+
+        ReligionState state = rm.getReligionState();
+        if (state == ReligionState.None || state == ReligionState.Pantheon) {
+            if (!rm.canFoundOrExpandPantheon())
+                throw new Fail("NOT_AVAILABLE", "还不能立万神殿：信仰 " + rm.getStoredFaith()
+                        + "/" + rm.faithForPantheon(0));
+        } else if (state != ReligionState.FoundingReligion && state != ReligionState.EnhancingReligion) {
+            throw new Fail("NOT_AVAILABLE", "现在不能选信念，状态是 " + state.name());
+        }
+
+        Map<String, Integer> expected = expectedBeliefs(rm, state);
+        int total = 0;
+        List<String> want = new ArrayList<>();
+        for (Map.Entry<String, Integer> e : expected.entrySet()) {
+            total += e.getValue();
+            want.add(e.getKey() + "x" + e.getValue());
+        }
+        if (chosen.size() != total)
+            throw new Fail("BAD_PARAMS", "这次要选 " + total + " 个信念（" + String.join(" ", want)
+                    + "），收到 " + chosen.size() + " 个", want);
+
+        String name = Json.str(params, "name");
+        String displayName = Json.str(params, "displayName");
+        if (state == ReligionState.FoundingReligion) {
+            if (name == null) throw new Fail("BAD_PARAMS", "立国教需要 name（宗教标识）");
+            if (displayName == null) displayName = name;
+            try {
+                rm.foundReligion$unciv_core(displayName, name);
+            } catch (Throwable e) {
+                throw new Fail("NOT_AVAILABLE", "立教失败: " + e.getMessage());
+            }
+        }
+        try {
+            rm.chooseBeliefs(chosen, rm.usingFreeBeliefs());
+        } catch (Throwable e) {
+            throw new Fail("NOT_AVAILABLE", "选信念失败: " + e.getMessage());
+        }
+
+        Religion rel = rm.getReligion();
+        List<String> names = new ArrayList<>();
+        for (Belief b : chosen) names.add(b.getName());
+        events.add("{\"type\":\"beliefs_chosen\",\"state\":" + q(rm.getReligionState().name())
+                + ",\"religion\":" + (rel == null ? "null"
+                        : q(rel.getDisplayName() == null ? rel.getName() : rel.getDisplayName()))
+                + ",\"beliefs\":[" + quotedList(names) + "]}");
+    }
+
+    // ---------- 城邦 ----------
+
+    private static void applyGiftCityState(GameInfo gi, Civilization actor, Map<String, Object> params, List<String> events) {
+        Civilization cs = requireOtherCiv(gi, actor, Json.str(params, "civ"));
+        if (!cs.isCityState()) throw new Fail("NOT_AVAILABLE", cs.getCivName() + " 不是城邦");
+        Integer gold = Json.integer(params, "gold");
+        int amount = gold == null ? 250 : gold;
+        if (amount <= 0) throw new Fail("BAD_PARAMS", "gold 必须是正数");
+        if (actor.getGold() < amount)
+            throw new Fail("NOT_AVAILABLE", "金币不够，现在只有 " + actor.getGold());
+
+        int gain = cs.getCityStateFunctions().influenceGainedByGift(actor, amount);
+        try {
+            cs.getCityStateFunctions().receiveGoldGift(actor, amount);
+        } catch (Throwable e) {
+            throw new Fail("NOT_AVAILABLE", "送礼失败: " + e.getMessage());
+        }
+        int influence = 0;
+        // 影响力存在城邦那一侧的 DiplomacyManager 上
+        if (cs.getDiplomacyManager(actor) != null)
+            influence = (int) cs.getDiplomacyManager(actor).getInfluence();
+        events.add("{\"type\":\"city_state_gift\",\"civ\":" + q(cs.getCivName())
+                + ",\"gold\":" + amount + ",\"influenceGained\":" + gain
+                + ",\"influence\":" + influence + "}");
+    }
+
+    private static void applyPledgeProtect(GameInfo gi, Civilization actor, Map<String, Object> params, List<String> events) {
+        Civilization cs = requireOtherCiv(gi, actor, Json.str(params, "civ"));
+        if (!cs.isCityState()) throw new Fail("NOT_AVAILABLE", cs.getCivName() + " 不是城邦");
+        Object p = params.get("protect");
+        boolean protect = !(p instanceof Boolean) || (Boolean) p;
+
+        CityStateFunctions f = cs.getCityStateFunctions();
+        if (protect) {
+            if (!f.otherCivCanPledgeProtection(actor))
+                throw new Fail("NOT_AVAILABLE", "现在不能承诺保护 " + cs.getCivName());
+            f.addProtectorCiv(actor);
+        } else {
+            if (!f.otherCivCanWithdrawProtection(actor)) {
+                com.unciv.logic.civilization.diplomacy.DiplomacyManager dm = cs.getDiplomacyManager(actor);
+                boolean isProtector = dm != null && dm.getDiplomaticStatus()
+                        == com.unciv.logic.civilization.diplomacy.DiplomaticStatus.Protector;
+                throw new Fail("NOT_AVAILABLE", isProtector
+                        ? "刚承诺保护，10 回合内不能撤回"
+                        : "现在没有对 " + cs.getCivName() + " 的保护承诺");
+            }
+            f.removeProtectorCiv(actor, false);
+        }
+        events.add("{\"type\":\"" + (protect ? "pledged_protection" : "withdrew_protection")
+                + "\",\"civ\":" + q(cs.getCivName()) + "}");
+    }
+
+    // ---------- 地块分配 ----------
+
+    private static void applySetWorkedTiles(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
+        City city = requireOwnCity(gi, actor, target);
+        List<Object> raw = Json.arr(params.get("tiles"));
+        if (raw.isEmpty()) throw new Fail("BAD_PARAMS", "需要 tiles 数组，元素是 [x,y]");
+
+        LinkedHashSet<HexCoord> want = new LinkedHashSet<>();
+        for (Object o : raw) {
+            List<Object> pair = Json.arr(o);
+            if (pair.size() < 2 || !(pair.get(0) instanceof Number) || !(pair.get(1) instanceof Number))
+                throw new Fail("BAD_PARAMS", "tiles 里每一项要是 [x,y]");
+            want.add(new HexCoord(((Number) pair.get(0)).intValue(), ((Number) pair.get(1)).intValue()));
+        }
+
+        List<String> bad = new ArrayList<>();
+        for (HexCoord c : want) {
+            Tile t = tileAt(gi, c.getX(), c.getY());
+            if (t == null) { bad.add(c.getX() + "," + c.getY()); continue; }
+            boolean workable = false;
+            Iterator<Tile> it = city.getWorkableTiles().iterator();
+            while (it.hasNext()) if (it.next() == t) { workable = true; break; }
+            if (!workable) bad.add(c.getX() + "," + c.getY());
+        }
+        if (!bad.isEmpty())
+            throw new Fail("ILLEGAL_TARGET", "这些格子不能被这座城工作: " + String.join(" ", bad), bad);
+
+        int pop = city.getPopulation().getPopulation();
+        if (want.size() > pop)
+            throw new Fail("BAD_PARAMS", "人口只有 " + pop + "，不能同时工作 " + want.size() + " 格");
+
+        List<Tile> current = workedTilesOf(city);
+        for (Tile t : current)
+            if (!want.contains(t.getPosition())) city.stopWorkingTile(t);
+
+        for (HexCoord c : want) {
+            Tile t = tileAt(gi, c.getX(), c.getY());
+            if (t == null || city.isWorked(t)) continue;
+            try {
+                city.workTile(t);
+            } catch (Throwable e) {
+                throw new Fail("NOT_AVAILABLE", "分配 " + c.getX() + "," + c.getY() + " 失败: " + e.getMessage());
+            }
+        }
+
+        Object lockObj = params.get("lock");
+        boolean lock = !(lockObj instanceof Boolean) || (Boolean) lockObj;
+        if (lock) {
+            for (HexCoord c : want) {
+                Tile t = tileAt(gi, c.getX(), c.getY());
+                if (t != null && city.isWorked(t)) city.lockTile(t);
+            }
+        }
+
+        Object fillObj = params.get("autoFill");
+        boolean autoFill = !(fillObj instanceof Boolean) || (Boolean) fillObj;
+        if (autoFill) city.getPopulation().autoAssignPopulation$unciv_core();
+
+        List<String> worked = new ArrayList<>();
+        for (Tile t : workedTilesOf(city)) {
+            HexCoord p = t.getPosition();
+            worked.add("[" + p.getX() + "," + p.getY() + "]");
+        }
+        events.add("{\"type\":\"worked_tiles_set\",\"city\":" + q("city-" + city.getId())
+                + ",\"worked\":[" + String.join(",", worked) + "]}");
+    }
+
+    // ---------- 核弹 ----------
+
+    private static void applyNuke(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
+        MapUnit unit = requireOwnUnit(gi, actor, target);
+        Integer x = Json.integer(params, "x");
+        Integer y = Json.integer(params, "y");
+        if (x == null || y == null) throw new Fail("BAD_PARAMS", "需要 x 与 y");
+        if (!unit.isNuclearWeapon()) throw new Fail("NOT_AVAILABLE", unit.getName() + " 不是核武器");
+
+        Tile t = tileAt(gi, x, y);
+        if (t == null) throw new Fail("ILLEGAL_TARGET", "没有这个格子: " + x + "," + y);
+        MapUnitCombatant combatant = new MapUnitCombatant(unit);
+        if (!Nuke.INSTANCE.mayUseNuke(combatant, t))
+            throw new Fail("ILLEGAL_TARGET", "打不到这个格子（射程 " + unit.getRange() + "）或者会被外交规则挡住");
+
+        try {
+            Nuke.INSTANCE.NUKE(combatant, t);
+        } catch (Throwable e) {
+            throw new Fail("NOT_AVAILABLE", "核打击失败: " + e.getMessage());
+        }
+        events.add("{\"type\":\"nuke\",\"unit\":" + q("unit-" + unit.getId())
+                + ",\"at\":[" + x + "," + y + "]}");
+    }
+
+    // ---------- 单位升级 ----------
+
+    private static void applyUpgradeUnit(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
+        MapUnit unit = requireOwnUnit(gi, actor, target);
+        String to = Json.str(params, "to");
+
+        List<PossibleUpgrade> ups = unit.getUpgrade().getUpgradesOfKind(false);
+        List<String> names = new ArrayList<>();
+        PossibleUpgrade pick = null;
+        for (PossibleUpgrade u : ups) {
+            if (!u.isShownToPlayer()) continue;
+            names.add(u.getUpgradedUnit().getName());
+            if (to != null && u.getUpgradedUnit().getName().equalsIgnoreCase(to)) pick = u;
+        }
+        if (pick == null && to == null) {
+            if (names.size() == 1) {
+                for (PossibleUpgrade u : ups) if (u.isShownToPlayer()) pick = u;
+            } else if (names.isEmpty()) {
+                throw new Fail("NOT_AVAILABLE", unit.getName() + " 现在没有可升级的目标");
+            } else {
+                throw new Fail("BAD_PARAMS", "有多个升级目标，请用 to 指定", names);
+            }
+        }
+        if (pick == null) throw new Fail("UNKNOWN_ID", "不能升级到 " + to, names);
+
+        if (!unit.getUpgrade().canPerformUpgrade(pick, false))
+            throw new Fail("NOT_AVAILABLE", "升级条件不满足（要 " + pick.getGoldCostOfUpgrade()
+                    + " 金币，现在 " + actor.getGold() + "）");
+
+        String from = unit.getName();
+        try {
+            unit.getUpgrade().performUpgrade(pick, false);
+        } catch (Throwable e) {
+            throw new Fail("NOT_AVAILABLE", "升级失败: " + e.getMessage());
+        }
+        events.add("{\"type\":\"unit_upgraded\",\"unit\":" + q("unit-" + unit.getId())
+                + ",\"from\":" + q(from) + ",\"to\":" + q(pick.getUpgradedUnit().getName())
+                + ",\"goldCost\":" + pick.getGoldCostOfUpgrade() + "}");
+    }
+
+    // ---------- 间谍 ----------
+
+    private static void applySpyMove(GameInfo gi, Civilization actor, Map<String, Object> params, List<String> events) {
+        String ref = Json.str(params, "spy");
+        if (ref == null) throw new Fail("BAD_PARAMS", "需要 spy（名字或序号）");
+        List<Spy> spies = actor.getEspionageManager().getSpyList();
+        Spy spy = null;
+        for (int i = 0; i < spies.size(); i++) {
+            if (spies.get(i).getName().equals(ref) || String.valueOf(i).equals(ref)) spy = spies.get(i);
+        }
+        if (spy == null) {
+            List<String> cand = new ArrayList<>();
+            for (Spy s : spies) cand.add(s.getName());
+            throw new Fail("UNKNOWN_ID", "没有这个间谍: " + ref, cand);
+        }
+
+        String cityRef = Json.str(params, "city");
+        if (cityRef == null || cityRef.isEmpty() || cityRef.equalsIgnoreCase("hideout")) {
+            spy.moveTo(null);
+            events.add("{\"type\":\"spy_moved\",\"spy\":" + q(spy.getName()) + ",\"to\":\"hideout\"}");
+            return;
+        }
+
+        City dest = null;
+        List<String> cand = new ArrayList<>();
+        Iterator<City> it = gi.getCities().iterator();
+        while (it.hasNext()) {
+            City c = it.next();
+            cand.add(c.getName());
+            if (c.getName().equals(cityRef) || ("city-" + c.getId()).equals(cityRef) || c.getId().equals(cityRef))
+                dest = c;
+        }
+        if (dest == null) throw new Fail("UNKNOWN_ID", "没有这个城市: " + cityRef, cand);
+        if (!spy.canMoveTo(dest)) throw new Fail("NOT_AVAILABLE", "这个间谍不能去 " + dest.getName());
+
+        spy.moveTo(dest);
+        events.add("{\"type\":\"spy_moved\",\"spy\":" + q(spy.getName()) + ",\"to\":" + q(dest.getName()) + "}");
+    }
+
     // ---------- 对象解析 ----------
 
     private static MapUnit requireOwnUnit(GameInfo gi, Civilization actor, String target) {
@@ -618,6 +1171,10 @@ public final class Kernel {
             case "get_map": return Agent.mapJson(gameInfo, actor,
                     Json.integer(args, "cx"), Json.integer(args, "cy"), Json.integer(args, "radius"));
             case "get_events": return Agent.eventsJson(gameInfo, actor, Json.integer(args, "limit"));
+            case "get_trade_offers": return Agent.tradeOffersJson(gameInfo, actor, Json.str(args, "civ"));
+            case "get_religion": return Agent.religionJson(gameInfo, actor);
+            case "get_city_states": return Agent.cityStatesJson(gameInfo, actor);
+            case "get_spies": return Agent.spiesJson(gameInfo, actor);
             case "declare_war":
             case "make_peace":
             case "adopt_policy":
@@ -631,27 +1188,28 @@ public final class Kernel {
             case "found_city":
             case "set_city_production":
             case "set_research":
+            case "propose_trade":
+            case "respond_trade":
+            case "choose_beliefs":
+            case "gift_city_state":
+            case "pledge_protect":
+            case "set_worked_tiles":
+            case "nuke":
+            case "upgrade_unit":
+            case "spy_move":
             case "end_turn": {
                 StringBuilder sb = new StringBuilder("{\"type\":").append(q(name));
-                String target = Json.str(args, "unit");
-                if (target == null) target = Json.str(args, "city");
-                if (target == null) target = Json.str(args, "civ");
-                if (target == null) target = Json.str(args, "policy");
-                if (target != null) sb.append(",\"target\":").append(q(target));
-                sb.append(",\"params\":{");
-                boolean first = true;
-                for (Map.Entry<String, Object> e : args.entrySet()) {
-                    if (e.getKey().equals("unit") || e.getKey().equals("city")
-                            || e.getKey().equals("civ") || e.getKey().equals("policy")) continue;
-                    if (!first) sb.append(',');
-                    first = false;
-                    sb.append(q(e.getKey())).append(':');
-                    Object v = e.getValue();
-                    if (v instanceof Number) sb.append(((Number) v).intValue());
-                    else if (v instanceof Boolean) sb.append(v);
-                    else sb.append(q(String.valueOf(v)));
+                Map<String, Object> rest = new LinkedHashMap<>(args);
+                String targetKey = null;
+                if (rest.containsKey("unit")) targetKey = "unit";
+                else if (rest.containsKey("city")) targetKey = "city";
+                else if (rest.containsKey("civ")) targetKey = "civ";
+                else if (rest.containsKey("policy")) targetKey = "policy";
+                if (targetKey != null) {
+                    Object tv = rest.remove(targetKey);
+                    sb.append(",\"target\":").append(tv instanceof String ? q((String) tv) : "null");
                 }
-                sb.append("}}");
+                sb.append(",\"params\":").append(Json.write(rest)).append('}');
                 return handleIntent(sb.toString(), gameInfo, ref, actor);
             }
             default:
