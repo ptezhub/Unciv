@@ -314,6 +314,10 @@ public class Agent {
             if (path.equals("/religion")) { send(ex, 200, religionJson(need(), actor)); return; }
             if (path.equals("/techs")) { send(ex, 200, techsJson(need(), actor)); return; }
             if (path.equals("/briefing")) { send(ex, 200, briefingJson(need(), actor)); return; }
+            if (path.equals("/targets")) {
+                send(ex, 200, targetsJson(need(), actor, query(ex, "unit")));
+                return;
+            }
             if (path.equals("/preview_attack")) {
                 send(ex, 200, previewAttackJson(need(), actor, query(ex, "unit"), query(ex, "city"),
                         intq(ex, "x"), intq(ex, "y")));
@@ -429,7 +433,7 @@ public class Agent {
                 || path.equals("/diplomacy") || path.equals("/policies") || path.equals("/trade")
                 || path.equals("/religion") || path.equals("/citystates") || path.equals("/spies")
                 || path.equals("/techs") || path.equals("/victory") || path.equals("/briefing")
-                || path.equals("/preview_attack")
+                || path.equals("/preview_attack") || path.equals("/targets")
                 || path.equals("/tile")
                 || path.startsWith("/city/") || path.equals("/actions")
                 || path.equals("/act") || path.equals("/move") || path.equals("/endturn");
@@ -1421,6 +1425,12 @@ public class Agent {
                     body.append(t);
                 }
             }
+            if (body.length() == 0) {
+                for (int i = 0; i < steps.size(); i++) {
+                    if (i > 0) body.append("\n");
+                    body.append(String.valueOf(steps.get(i)));
+                }
+            }
             sb.append(",\"text\":").append(quote(body.toString())).append('}');
         }
         return sb.append("]}").toString();
@@ -1509,6 +1519,55 @@ public class Agent {
                 + ",\"attackerHp\":" + attackerHp
                 + ",\"wouldKillDefender\":" + (defMax >= defenderHp)
                 + ",\"wouldKillAttacker\":" + (atkMax >= attackerHp) + "}";
+    }
+
+    /** 某个单位这回合能打的所有目标，附伤害区间；省得模型自己算六边形几何 */
+    static String targetsJson(GameInfo gi, Civilization c, String unitRef) {
+        Integer id = Kernel.idOf(unitRef, "unit");
+        MapUnit unit = null;
+        if (id != null) {
+            Iterator<MapUnit> it = c.getUnits().getCivUnits().iterator();
+            while (it.hasNext()) { MapUnit m = it.next(); if (m.getId() == id) unit = m; }
+        }
+        if (unit == null) return "{\"error\":{\"code\":\"NOT_YOUR_UNIT\",\"message\":" + quote("没有这个单位") + "}}";
+
+        StringBuilder sb = new StringBuilder("{\"unit\":").append(quote("unit-" + unit.getId()))
+                .append(",\"name\":").append(quote(unit.getName()))
+                .append(",\"range\":").append(unit.getRange())
+                .append(",\"targets\":[");
+        boolean first = true;
+        try {
+            com.unciv.logic.battle.BattleDamage bd = com.unciv.logic.battle.BattleDamage.INSTANCE;
+            com.unciv.logic.battle.MapUnitCombatant attacker =
+                    new com.unciv.logic.battle.MapUnitCombatant(unit);
+            com.unciv.logic.map.mapunit.movement.PathsToTilesWithinTurn paths =
+                    unit.getMovement().getDistanceToTiles(false, null, null, false);
+            ArrayList<com.unciv.logic.battle.AttackableTile> list =
+                    com.unciv.logic.battle.TargetHelper.INSTANCE.getAttackableEnemies(unit, paths, null, false);
+            LinkedHashSet<String> seen = new LinkedHashSet<>();
+            for (com.unciv.logic.battle.AttackableTile at : list) {
+                Tile t = at.getTileToAttack();
+                String key = t.getPosition().getX() + "," + t.getPosition().getY();
+                if (!seen.add(key)) continue;
+                com.unciv.logic.battle.ICombatant defender = at.getCombatant();
+                int dMin = 0, dMax = 0, aMin = 0, aMax = 0;
+                try {
+                    dMin = bd.calculateDamageToDefender(attacker, defender, at.getTileToAttackFrom(), 0f);
+                    dMax = bd.calculateDamageToDefender(attacker, defender, at.getTileToAttackFrom(), 1f);
+                    aMin = bd.calculateDamageToAttacker(attacker, defender, at.getTileToAttackFrom(), 0f);
+                    aMax = bd.calculateDamageToAttacker(attacker, defender, at.getTileToAttackFrom(), 1f);
+                } catch (Throwable ignored) { }
+                if (!first) sb.append(',');
+                first = false;
+                sb.append("{\"x\":").append(t.getPosition().getX())
+                  .append(",\"y\":").append(t.getPosition().getY())
+                  .append(",\"type\":").append(quote(t.isCityCenter() ? "city" : "unit"))
+                  .append(",\"damageToDefender\":{\"min\":").append(dMin).append(",\"max\":").append(dMax).append('}')
+                  .append(",\"damageToAttacker\":{\"min\":").append(aMin).append(",\"max\":").append(aMax).append('}')
+                  .append('}');
+            }
+        } catch (Throwable ignored) { }
+        return sb.append("]}").toString();
     }
 
     static String techsJson(GameInfo gi, Civilization c) {

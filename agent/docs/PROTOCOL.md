@@ -39,6 +39,7 @@ Contents:
 | GET | `/tools` | — | `{"tools":[{name,kind,description,schema}]}` |
 | GET | `/guide` | `?name&category` | `{"entries":[{name,category,steps,text}]}` |
 | GET | `/preview_attack` | `?unit&city&x&y` | damage estimate, no state change |
+| GET | `/targets` | `?unit` | attackable tiles with damage ranges |
 | GET | `/isalive` | — | `{"online":true}` |
 | any | `/auth` | `Authorization: Basic` | `{"ok":true,"user":"<user>"}` |
 | GET | `/files/{name}` | — | raw bytes, `text/plain` |
@@ -192,7 +193,7 @@ candidates are there to be retried.
 
 ## Tool table
 
-45 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
+46 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
 drift from the code.
 
 Read (`kind: read`) — these are not intents; call the HTTP route or the MCP tool:
@@ -214,6 +215,7 @@ Read (`kind: read`) — these are not intents; call the HTTP route or the MCP to
 | `get_briefing` | — | `GET /briefing` |
 | `get_guide` | `name?`, `category?` | `GET /guide` |
 | `preview_attack` | `unit` or `city`, `x`, `y` | `GET /preview_attack` |
+| `get_targets` | `unit` | `GET /targets` |
 | `get_religion` | — | `GET /religion` |
 | `get_city_states` | — | `GET /citystates` |
 | `get_spies` | — | `GET /spies` |
@@ -222,10 +224,10 @@ Act (`kind: act`):
 
 | Tool | Params | Notes |
 |---|---|---|
-| `move_unit` | `unit`, `x`, `y` | moves toward the tile: exactly if it is reachable this turn, otherwise as far as the path allows. The event carries `arrived` and `tilesLeft`, so call it again next turn to keep walking. A tile the unit can never reach is `ILLEGAL_TARGET`; no movement left is `NOT_AVAILABLE` |
+| `move_unit` | `unit`, `x`, `y` | moves toward the tile: exactly if it is reachable this turn, otherwise as far as the path allows. The event carries `arrived`, `tilesLeft` and `blockedBy` (set when the destination is occupied, which is why a move can stop short and still report ok). A tile the unit can never reach is `ILLEGAL_TARGET`; no movement left is `NOT_AVAILABLE` |
 | `found_city` | `unit` | settler must be able to found here |
 | `set_city_production` | `city`, `item`, `count`, `mode` | `mode` defaults to `replace` (clears the queue first); `append` keeps what is already queued. The event echoes the engine's real queue, so `queued` is never a guess |
-| `set_research` | `tech` | replaces the research queue with one tech |
+| `set_research` | `tech`, `techs?` | `techs` queues several in order, so research does not idle for a turn when one completes |
 | `attack` | `unit`, `x`, `y` | melee/ranged; target must be reachable this turn |
 | `bombard` | `unit`, `x`, `y` | ranged only, unit stays put |
 | `promote_unit` | `unit`, `promotion` | must be in the unit's available promotions |
@@ -267,7 +269,7 @@ Names are exact. `UNKNOWN_ID` returns up to 8 substring matches, so `Monu` sugge
 | `initialize` | `protocolVersion: "2025-06-18"`, `capabilities.tools`, `serverInfo: {name:"unciv-agent",version:"0.1.0"}` |
 | `notifications/initialized` | HTTP `202`, empty body |
 | `ping` | `{}` |
-| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 45 entries |
+| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 46 entries |
 | `tools/call` | `{content:[{type:"text",text:"<tool JSON as a string>"}],isError:bool}` |
 | anything else | `-32601 Method not found` |
 
@@ -375,6 +377,14 @@ civilizations appear; the acting civilization is excluded.
 `GET /policies` — `{"adopted":[…],"culture":N,"cultureNeededForNextPolicy":M,"canAdoptPolicy":bool,"adoptableBranches":[…],"tree":[{branch,policies:[{name,adopted,requires,ready}]}]}`.
 `tree` covers every branch in the ruleset, so sub-policies are visible before the branch is
 opened; `ready` means prerequisites are met (culture is a separate question).
+
+`GET /targets?unit=` — every tile this unit can hit this turn, each with the same damage ranges
+as `preview_attack`. Use it instead of computing hex geometry: `{"unit","name","range",
+"targets":[{x,y,type,damageToDefender,damageToAttacker}]}`.
+
+Hex geometry, for the record: distance is `max(|dx|,|dy|)` when dx and dy have the same sign,
+and `|dx|+|dy|` when they have opposite signs. Neighbours of (x,y) are (x±1,y), (x,y±1),
+(x+1,y-1) and (x-1,y+1).
 
 `GET /preview_attack` — what the client shows when you hover an enemy: strengths, the damage
 range in both directions, whether either side dies, and whether the target is in range.

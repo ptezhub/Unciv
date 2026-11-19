@@ -127,6 +127,8 @@ public final class Kernel {
                 "{\"type\":\"object\",\"properties\":{\"civ\":{\"type\":\"string\"},\"give\":{\"type\":\"array\"},\"want\":{\"type\":\"array\"}},\"required\":[\"civ\"]}", "act");
         tool("respond_trade", "回应某个文明发来的交易请求：accept 为 true 成交，false 拒绝。",
                 "{\"type\":\"object\",\"properties\":{\"civ\":{\"type\":\"string\"},\"accept\":{\"type\":\"boolean\"},\"index\":{\"type\":\"integer\"}},\"required\":[\"civ\"]}", "act");
+        tool("get_targets", "这个单位这回合能打的所有目标格，附双向伤害区间。",
+                "{\"type\":\"object\",\"properties\":{\"unit\":{\"type\":\"string\"}},\"required\":[\"unit\"]}", "read");
         tool("preview_attack", "不执行动作，只算这一击的伤害范围：双方力量、期望伤害、会不会死、够不够得着。",
                 "{\"type\":\"object\",\"properties\":{\"unit\":{\"type\":\"string\"},\"city\":{\"type\":\"string\"},\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"}},\"required\":[\"x\",\"y\"]}", "read");
         tool("get_guide", "游戏自带的教程/百科条目，可当攻略参考；可按 name 或 category 过滤。",
@@ -309,11 +311,21 @@ public final class Kernel {
         HexCoord to = unit.getTile().getPosition();
         boolean arrived = to.getX() == dest.getPosition().getX() && to.getY() == dest.getPosition().getY();
         int left = unit.getTile().aerialDistanceTo(dest);
+        String blocked = null;
+        if (!arrived) {
+            Iterator<MapUnit> uit = dest.getUnits().iterator();
+            if (uit.hasNext()) {
+                MapUnit occupant = uit.next();
+                blocked = "目标格被 " + occupant.getCiv().getCivName() + " 的 "
+                        + occupant.getName() + " 占着，走不进去";
+            }
+        }
         events.add("{\"type\":\"unit_moved\",\"unit\":" + q("unit-" + unit.getId())
                 + ",\"from\":[" + from.getX() + "," + from.getY() + "]"
                 + ",\"to\":[" + to.getX() + "," + to.getY() + "]"
                 + ",\"target\":[" + dest.getPosition().getX() + "," + dest.getPosition().getY() + "]"
                 + ",\"arrived\":" + arrived
+                + ",\"blockedBy\":" + (blocked == null ? "null" : q(blocked))
                 + ",\"tilesLeft\":" + left
                 + ",\"moves\":" + unit.getCurrentMovement() + "}");
     }
@@ -450,7 +462,9 @@ public final class Kernel {
     private static void applyResearch(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
         Civilization civ = actor;
         String tech = Json.str(params, "tech");
-        if (tech == null) throw new Fail("BAD_PARAMS", "需要 tech");
+        List<Object> queue = Json.arr(params.get("techs"));
+        if (tech == null && !queue.isEmpty()) tech = String.valueOf(queue.get(0));
+        if (tech == null) throw new Fail("BAD_PARAMS", "需要 tech 或 techs");
 
         Ruleset rs = gi.getRuleset();
         if (!rs.getTechnologies().containsKey(tech)) {
@@ -470,9 +484,24 @@ public final class Kernel {
         }
         if (!can) throw new Fail("NOT_AVAILABLE", "现在研究不了: " + tech);
 
+        // techs 数组可以一次排好几项，省得科技一完成就空转一回合
+        List<String> plan = new ArrayList<>();
+        plan.add(tech);
+        for (Object o : queue) {
+            String t = o instanceof String ? (String) o : null;
+            if (t == null || t.equals(tech)) continue;
+            if (!rs.getTechnologies().containsKey(t)) continue;
+            plan.add(t);
+        }
         civ.getTech().getTechsToResearch().clear();
-        civ.getTech().getTechsToResearch().add(tech);
-        events.add("{\"type\":\"research_set\",\"tech\":" + q(tech) + "}");
+        civ.getTech().getTechsToResearch().addAll(plan);
+        StringBuilder pj = new StringBuilder();
+        for (String t : plan) {
+            if (pj.length() > 0) pj.append(',');
+            pj.append(q(t));
+        }
+        events.add("{\"type\":\"research_set\",\"tech\":" + q(tech)
+                + ",\"queue\":[" + pj + "]}");
     }
 
     private static void applyAttack(GameInfo gi, Civilization actor, String target, Map<String, Object> params,
@@ -540,6 +569,14 @@ public final class Kernel {
         }
 
         MapUnitCombatant attacker = new MapUnitCombatant(unit);
+        try {
+            if (stayOnTile && hit.getTileToAttack().isCityCenter()
+                    && hit.getTileToAttack().getCity() != null
+                    && hit.getTileToAttack().getCity().getHealth() <= 1)
+                throw new Fail("NOT_AVAILABLE", "这座城只剩 1 血，远程打不下来，需要近战单位走进去占领");
+        } catch (Fail f) {
+            throw f;
+        } catch (Throwable ignored) { }
         if (!stayOnTile) Battle.INSTANCE.movePreparingAttack(attacker, hit, false);
         Battle.DamageDealt dmg = Battle.INSTANCE.attackOrNuke(attacker, hit);
         HexCoord at = unit.getTile().getPosition();
@@ -1597,6 +1634,7 @@ public final class Kernel {
             case "get_events": return Agent.eventsJson(gameInfo, actor, Json.integer(args, "limit"));
             case "get_trade_offers": return Agent.tradeOffersJson(gameInfo, actor, Json.str(args, "civ"));
             case "get_guide": return Agent.guideJson(Json.str(args, "name"), Json.str(args, "category"));
+            case "get_targets": return Agent.targetsJson(gameInfo, actor, Json.str(args, "unit"));
             case "preview_attack": return Agent.previewAttackJson(gameInfo, actor,
                     Json.str(args, "unit"), Json.str(args, "city"),
                     Json.integer(args, "x"), Json.integer(args, "y"));
