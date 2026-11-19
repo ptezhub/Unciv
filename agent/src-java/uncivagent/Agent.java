@@ -1028,6 +1028,16 @@ public class Agent {
                 sb.append(",\"features\":[").append(mf).append(']');
                 String res = t.getResource();
                 if (res != null) sb.append(",\"resource\":").append(quote(res));
+                // 设施与路的归属：/map 少了这个，工人会对着已有 Farm 的地反复开工
+                if (t.getImprovement() != null)
+                    sb.append(",\"improvement\":").append(quote(t.getImprovement()));
+                String wip = t.getImprovementInProgress();
+                if (wip != null) sb.append(",\"improvementInProgress\":").append(quote(wip))
+                        .append(",\"turnsToImprovement\":").append(t.getTurnsToImprovement());
+                if (t.getRoadStatus() != null && t.getRoadStatus().name().equals("Road"))
+                    sb.append(",\"road\":true");
+                else if (t.getRoadStatus() != null && t.getRoadStatus().name().equals("Railroad"))
+                    sb.append(",\"railroad\":true");
                 Civilization owner = t.getOwner();
                 if (owner != null) sb.append(",\"owner\":").append(quote(owner.getCivName()));
                 try {
@@ -1367,7 +1377,7 @@ public class Agent {
                 sb.append(",\"attackable\":[");
                 try {
                     com.unciv.logic.map.mapunit.movement.PathsToTilesWithinTurn paths =
-                            u.getMovement().getDistanceToTiles(false, null, null, false);
+                            u.getMovement().getDistanceToTiles(true, null, null, true);
                     ArrayList<com.unciv.logic.battle.AttackableTile> list =
                             com.unciv.logic.battle.TargetHelper.INSTANCE.getAttackableEnemies(u, paths, null, false);
                     java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
@@ -1793,7 +1803,7 @@ public class Agent {
 
         // 这回合能不能到
         com.unciv.logic.map.mapunit.movement.PathsToTilesWithinTurn paths = null;
-        try { paths = unit.getMovement().getDistanceToTiles(false, null, null, false); }
+        try { paths = unit.getMovement().getDistanceToTiles(true, null, null, true); }
         catch (Throwable ignored) { }
 
         if (paths != null && paths.containsKey(dest)) {
@@ -1972,7 +1982,7 @@ public class Agent {
         int n = 0;
         try {
             com.unciv.logic.map.mapunit.movement.PathsToTilesWithinTurn paths =
-                    unit.getMovement().getDistanceToTiles(false, null, null, false);
+                    unit.getMovement().getDistanceToTiles(true, null, null, true);
             List<Tile> keys = new ArrayList<>(paths.keySet());
             keys.sort((a, b) -> Float.compare(paths.get(a).getTotalMovement(), paths.get(b).getTotalMovement()));
             for (Tile t : keys) {
@@ -2028,7 +2038,7 @@ public class Agent {
             com.unciv.logic.battle.MapUnitCombatant attacker =
                     new com.unciv.logic.battle.MapUnitCombatant(unit);
             com.unciv.logic.map.mapunit.movement.PathsToTilesWithinTurn paths =
-                    unit.getMovement().getDistanceToTiles(false, null, null, false);
+                    unit.getMovement().getDistanceToTiles(true, null, null, true);
             ArrayList<com.unciv.logic.battle.AttackableTile> list =
                     com.unciv.logic.battle.TargetHelper.INSTANCE.getAttackableEnemies(unit, paths, null, false);
             LinkedHashSet<String> seen = new LinkedHashSet<>();
@@ -2126,12 +2136,15 @@ public class Agent {
                      .append(",\"type\":").append(quote(e.getValue().getType().name())).append('}');
         }
 
+        boolean canPantheon = false;
+        try { canPantheon = rm.canFoundOrExpandPantheon(); } catch (Throwable ignored) { }
         StringBuilder must = new StringBuilder("{");
         try {
             com.unciv.logic.civilization.managers.ReligionState state = rm.getReligionState();
             com.unciv.models.Counter<com.unciv.models.ruleset.BeliefType> cnt;
-            if (state == com.unciv.logic.civilization.managers.ReligionState.None
-                    || state == com.unciv.logic.civilization.managers.ReligionState.Pantheon) {
+            // 只有还没立过万神殿时才要求选万神殿信念；state==Pantheon 时引擎会拒绝，
+            // 之前这里照报 Pantheon:1，和 choose_beliefs 的返回直接矛盾。
+            if (state == com.unciv.logic.civilization.managers.ReligionState.None) {
                 must.append("\"Pantheon\":1");
             } else {
                 cnt = state == com.unciv.logic.civilization.managers.ReligionState.EnhancingReligion
@@ -2154,6 +2167,8 @@ public class Agent {
                         : quote(rel.getDisplayName() == null ? rel.getName() : rel.getDisplayName()))
                 + ",\"beliefs\":[" + beliefs + "]"
                 + ",\"availableBeliefs\":[" + available + "]"
+                + ",\"canChoosePantheon\":" + canPantheon
+                + ",\"pantheonFaithNeeded\":" + rm.faithForPantheon(0)
                 + ",\"mustChoose\":" + must + "}";
     }
 

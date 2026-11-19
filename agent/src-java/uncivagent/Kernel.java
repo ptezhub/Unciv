@@ -630,7 +630,10 @@ public final class Kernel {
         PathsToTilesWithinTurn paths;
         ArrayList<AttackableTile> targets;
         try {
-            paths = unit.getMovement().getDistanceToTiles(false, null, null, false);
+            // 必须和引擎内部一致（默认考虑 zone of control、考虑护送），否则我们算出来的
+            // 可攻击目标可能不在引擎自己的距离表里，Battle.movePreparingAttack 会抛
+            // "Can't reach Tile"，被外层包成 INTERNAL。
+            paths = unit.getMovement().getDistanceToTiles(true, null, null, true);
             targets = TargetHelper.INSTANCE.getAttackableEnemies(unit, paths, null, stayOnTile);
         } catch (Throwable e) {
             throw new Fail("ILLEGAL_TARGET", "算不出攻击路线: " + e.getMessage());
@@ -695,7 +698,13 @@ public final class Kernel {
         } catch (Throwable ignored) { }
         HexCoord from = unit.getTile().getPosition();
         if (!stayOnTile) Battle.INSTANCE.movePreparingAttack(attacker, hit, false);
-        Battle.DamageDealt dmg = Battle.INSTANCE.attackOrNuke(attacker, hit);
+        Battle.DamageDealt dmg;
+        try {
+            dmg = Battle.INSTANCE.attackOrNuke(attacker, hit);
+        } catch (Throwable e) {
+            throw new Fail("NOT_AVAILABLE", "引擎拒绝这次攻击: " + e.getMessage()
+                    + "（常见原因是目标格上有被俘平民，或路线判定与引擎不一致）");
+        }
         HexCoord at = unit.getTile().getPosition();
         events.add("{\"type\":\"attacked\",\"unit\":" + q("unit-" + unit.getId())
                 + ",\"target\":[" + x + "," + y + "]"
@@ -1184,9 +1193,16 @@ public final class Kernel {
 
         ReligionState state = rm.getReligionState();
         if (state == ReligionState.None || state == ReligionState.Pantheon) {
-            if (!rm.canFoundOrExpandPantheon())
-                throw new Fail("NOT_AVAILABLE", "还不能立万神殿：信仰 " + rm.getStoredFaith()
-                        + "/" + rm.faithForPantheon(0));
+            if (!rm.canFoundOrExpandPantheon()) {
+                String why;
+                if (state == ReligionState.Pantheon)
+                    why = "已经立过万神殿了，下一步是攒够信仰并派大先知立教";
+                else if (rm.getStoredFaith() < rm.faithForPantheon(0))
+                    why = "还不能立万神殿：信仰 " + rm.getStoredFaith() + "/" + rm.faithForPantheon(0);
+                else
+                    why = "现在不能立万神殿（万神殿名额已满，或本局没开宗教）";
+                throw new Fail("NOT_AVAILABLE", why);
+            }
         } else if (state != ReligionState.FoundingReligion && state != ReligionState.EnhancingReligion) {
             throw new Fail("NOT_AVAILABLE", "现在不能选信念，状态是 " + state.name());
         }

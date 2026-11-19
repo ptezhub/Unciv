@@ -370,10 +370,14 @@ Note the candidates here are objects, unlike intent errors where they are string
 
 `GET /map?cx&cy&radius` — `radius` defaults to 3 and is clamped to `0..12`; `cx`/`cy` default
 to `0,0`. Only tiles explored by the acting civilization are returned:
-`{"center":[cx,cy],"radius":r,"tiles":[{x,y,terrain,visible,resource?,owner?,city?,units?}]}`.
+`{"center":[cx,cy],"radius":r,"tiles":[{x,y,terrain,visible,resource?,owner?,city?,improvement?,
+improvementInProgress?,turnsToImprovement?,road?,railroad?,units?}]}`.
 `units` lists the units standing on a tile you can see — `{id,own,owner,name,hp,military}`,
 where `own` is true for your own, so one read is enough to see both sides —
 which is how you notice an incoming army before it reaches a city.
+`improvement` and `improvementInProgress` mirror `/tile`: without them a worker cannot tell a
+bare tile from an already-farmed one and will re-queue the same improvement. `road`/`railroad`
+are booleans, present only when true.
 `resource` is omitted when the tile has none; `owner` is the civilization owning the tile;
 `city` appears **only on a city centre tile** — the engine's own `Tile.getCity()` returns the
 owning city for every tile in its territory, which is not what an attacker wants.
@@ -453,9 +457,12 @@ client's move overlay; use it instead of guessing which neighbours are worth con
 as `preview_attack`. Use it instead of computing hex geometry: `{"unit","name","range",
 "targets":[{x,y,type,damageToDefender,damageToAttacker}]}`.
 
-Hex geometry, for the record: distance is `max(|dx|,|dy|)` when dx and dy have the same sign,
-and `|dx|+|dy|` when they have opposite signs. Neighbours of (x,y) are (x±1,y), (x,y±1),
-(x+1,y-1) and (x-1,y+1).
+Hex geometry, for the record: `distance = max(|dx|, |dy|, |dx - dy|)`, which is what the engine
+uses (`Tile.aerialDistanceTo`). Neighbours of (x,y) are (x±1,y), (x,y±1), (x+1,y+1) and
+(x-1,y-1) — note the diagonals go the *same* way, so (x+1,y-1) is distance 2, not adjacent.
+
+This matters for roads: a road only counts as connected along real neighbours, so one tile placed
+by the wrong rule can leave a city unconnected with no error anywhere.
 
 `GET /preview_attack` — what the client shows when you hover an enemy: strengths, the damage
 range in both directions, whether either side dies, and whether the target is in range.
