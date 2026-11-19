@@ -477,6 +477,22 @@ client's move overlay; use it instead of guessing which neighbours are worth con
 as `preview_attack`. Use it instead of computing hex geometry: `{"unit","name","range",
 "targets":[{x,y,type,damageToDefender,damageToAttacker}]}`.
 
+`GET /events_stream` — server-sent events, one long-lived connection. The stock client only
+notices a new state when it polls `<gameId>_Preview` every `currentGameRefreshDelay` seconds
+(10 by default, 3 at the fastest, and that setting lives on the client where the server cannot
+reach it). This endpoint closes that gap: every publish writes
+
+```
+event: update
+data: {"version":7,"gameId":"…","turn":42,"currentPlayer":"Russia","subscribers":1}
+```
+
+to every subscriber, plus a `: ping` comment every 8 seconds. A client that receives an update
+should do exactly what its poller does — `currentGame.requestUpdate()` — so the polling path
+stays as the fallback and nothing else changes. Dead connections are detected by the next write
+(≤8s), then dropped. `version` is a host-wide counter, monotonic per process, so it resets when
+the host restarts; compare it only within one connection's lifetime, or use `turn` for content.
+
 Hex geometry, for the record: `distance = max(|dx|, |dy|, |dx - dy|)`, which is what the engine
 uses (`Tile.aerialDistanceTo`). Neighbours of (x,y) are (x±1,y), (x,y±1), (x+1,y+1) and
 (x-1,y-1) — note the diagonals go the *same* way, so (x+1,y-1) is distance 2, not adjacent.

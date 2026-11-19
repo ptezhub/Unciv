@@ -41,6 +41,9 @@ import java.util.ArrayList
 import java.util.Base64
 import java.util.LinkedHashMap
 import java.util.LinkedHashSet
+import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
 
 /**
@@ -84,8 +87,13 @@ object Agent {
         if (save != null) loadSave(save)
 
         val server = HttpServer.create(InetSocketAddress(port), 0)
-        server.createContext("/") { ex -> handle(ex) }
-        server.setExecutor(null)
+        // 推送连接会一直占着线程，不能用默认的单线程分发器。
+        // 游戏状态仍是单线程语义：除 /events_stream 外，所有请求都在 STATE_LOCK 里串行处理。
+        server.createContext("/") { ex ->
+            if (ex.requestURI.path == STREAM_PATH) handleStream(ex)
+            else synchronized(STATE_LOCK) { handle(ex) }
+        }
+        server.setExecutor(Executors.newCachedThreadPool())
         server.start()
         System.out.println("[unciv-agent] listening on 0.0.0.0:" + port +
             " cwd=" + File(".").getAbsolutePath() +
@@ -158,8 +166,10 @@ object Agent {
 
     /** 把当前对局写成同步文件，供官方客户端拉取。写临时文件再 rename，避免读到半个文件。 */
     private fun publishSync(gi: GameInfo) {
+        publishVersion++
         // 客户端格式总是发布；UNCIV_AGENT_SYNC 那个名字只是额外的"客户端上传回来"通道
         publishClientFiles(gi)
+        broadcast(gi)
         val name = syncName ?: return
         try {
             val dir = fileRoot
@@ -175,6 +185,104 @@ object Agent {
         } catch (t: Throwable) {
             System.out.println("[unciv-agent] 发布同步文件失败: " + t.message)
         }
+    }
+
+    // ---------------- 推送（SSE） ----------------
+    //
+    // 原版客户端每 currentGameRefreshDelay 拉一次 <gameId>_Preview 才发现状态变了，
+    // 这个间隔是客户端本地设置，服务器改不了。所以补一条服务器主动通知：
+    // 每次 publishSync 之后往所有订阅者写一条 update 事件，客户端收到就立刻走一次
+    // 和轮询完全相同的 requestUpdate()。轮询保留作兜底，断线只是退回 10 秒节奏。
+    //
+    // 每个订阅者一个队列加一个写线程：广播只入队不碰 socket，
+    // 慢客户端和半死连接不会卡住宿主的发布路径（队列满了就当它掉线）。
+
+    private const val STREAM_PATH = "/events_stream"
+    private val STATE_LOCK = Any()
+    private val subscribers = java.util.concurrent.CopyOnWriteArrayList<Subscriber>()
+
+    @Volatile
+    private var publishVersion: Long = 0
+
+    private class Subscriber(val ex: HttpExchange) {
+        val queue = LinkedBlockingQueue<String>(64)
+
+        @Volatile
+        var alive = true
+
+        val writer = Thread {
+            try {
+                val out = ex.responseBody
+                while (alive) {
+                    val chunk = queue.poll(8, TimeUnit.SECONDS) ?: ": ping\n\n"
+                    out.write(chunk.toByteArray(StandardCharsets.UTF_8))
+                    out.flush()
+                }
+            } catch (ignored: Throwable) {
+                alive = false
+            }
+        }
+
+        fun offer(chunk: String) {
+            if (!alive) return
+            if (!queue.offer(chunk)) alive = false   // 跟不上就摘掉，别拖累发布
+        }
+    }
+
+    private fun updateEvent(gi: GameInfo?): String {
+        val gid = gi?.gameId?.let { Kernel.q(it) } ?: "null"
+        val turn = gi?.turns ?: -1
+        val cur = gi?.currentPlayer?.let { Kernel.q(it) } ?: "null"
+        return "event: update\n" +
+            "data: {\"version\":$publishVersion,\"gameId\":$gid,\"turn\":$turn," +
+            "\"currentPlayer\":$cur,\"subscribers\":${subscribers.size}}\n\n"
+    }
+
+    private fun broadcast(gi: GameInfo) {
+        if (subscribers.isEmpty()) return
+        val chunk = updateEvent(gi)
+        for (s in subscribers) s.offer(chunk)
+        sweepSubscribers()
+    }
+
+    private fun sweepSubscribers() {
+        if (subscribers.none { !it.alive }) return
+        val dead = subscribers.filter { !it.alive }
+        subscribers.removeAll(dead)
+        for (s in dead) try { s.ex.close() } catch (ignored: Throwable) { }
+        System.out.println("[unciv-agent] sse subscriber gone, now " + subscribers.size)
+    }
+
+    private fun handleStream(ex: HttpExchange) {
+        if (ex.requestMethod != "GET") {
+            send(ex, 405, err("只支持 GET"))
+            return
+        }
+        try {
+            ex.responseHeaders.add("Content-Type", "text/event-stream; charset=utf-8")
+            ex.responseHeaders.add("Cache-Control", "no-cache")
+            ex.responseHeaders.add("Connection", "keep-alive")
+            ex.responseHeaders.add("X-Accel-Buffering", "no")
+            ex.sendResponseHeaders(200, 0)   // 0 = chunked，连接保持打开
+        } catch (t: Throwable) {
+            try { ex.close() } catch (ignored: Throwable) { }
+            return
+        }
+
+        val sub = Subscriber(ex)
+        subscribers.add(sub)
+        // 先给一条 hello，客户端不用等下一次发布就知道当前版本
+        sub.queue.offer("retry: 3000\n" + updateEvent(gameInfo))
+        sub.writer.isDaemon = true
+        sub.writer.start()
+        System.out.println("[unciv-agent] sse subscriber +1, now " + subscribers.size)
+
+        // 必须阻塞到连接结束，否则 exchange 会被关掉
+        try { sub.writer.join() } catch (ignored: Throwable) { }
+        sub.alive = false
+        subscribers.remove(sub)
+        System.out.println("[unciv-agent] sse subscriber closed, now " + subscribers.size)
+        try { ex.close() } catch (ignored: Throwable) { }
     }
 
     /** 按官方客户端的多人格式发布：<gameId> 和 <gameId>_Preview，内容都是 gzip+base64 的 JSON。
