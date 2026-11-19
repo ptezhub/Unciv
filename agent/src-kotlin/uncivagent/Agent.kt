@@ -626,7 +626,7 @@ object Agent {
                 .append('}')
         }
         val units = StringBuilder()
-        for (u in c.units.getCivUnits()) {
+        for (u in c.units.getCivUnits().sortedBy { it.id }) {
             if (units.length > 0) units.append(',')
             val p = u.getTile().position
             units.append("""{"id":""").append(quote("unit-" + u.id))
@@ -679,7 +679,7 @@ object Agent {
         val gv = GameView(gi, c, false)
         val sb = StringBuilder("""{"units":[""")
         var first = true
-        for (u in c.units.getCivUnits()) {
+        for (u in c.units.getCivUnits().sortedBy { it.id }) {
             val v = gv.getMapUnitView(u)
             if (!first) sb.append(',')
             first = false
@@ -1304,7 +1304,7 @@ object Agent {
         // 需要操作的单位
         sb.append(""","unitsNeedingOrders":[""")
         var firstUnit = true
-        for (u in c.units.getCivUnits()) {
+        for (u in c.units.getCivUnits().sortedBy { it.id }) {
             if (u.currentMovement <= 0.1f) continue
             if (!firstUnit) sb.append(',')
             firstUnit = false
@@ -2177,7 +2177,7 @@ object Agent {
     }
 
     private fun findUnit(gi: GameInfo, c: Civilization, id: Int): MapUnit? {
-        for (u in c.units.getCivUnits()) {
+        for (u in c.units.getCivUnits().sortedBy { it.id }) {
             if (u.id == id) return u
         }
         return null
