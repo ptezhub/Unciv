@@ -501,8 +501,15 @@ object Kernel {
                 buildable = city.cityConstructions.canAddToQueue(con, emptyList())
             } catch (ignored: Throwable) { }
         }
-        if (!buildable)
+        if (!buildable) {
+            // 已经建过的别报成"缺前置"，那会把重试逻辑带偏
+            var already = false
+            try { already = city.cityConstructions.isBuilt(item) } catch (ignored: Throwable) { }
+            if (already)
+                throw Fail("NOT_AVAILABLE", "$item 这座城已经建过了，每座城只能建一座",
+                    buildableNow(gi, city))
             throw Fail("NOT_AVAILABLE", "现在不能生产 $item（缺科技/资源/前置）", buildableNow(gi, city))
+        }
 
         val mode = str(params, "mode")
         val replace = mode == null || !mode.equals("append", ignoreCase = true)
@@ -551,20 +558,33 @@ object Kernel {
         } catch (e: Throwable) {
             can = false
         }
-        if (!can) throw Fail("NOT_AVAILABLE", "现在研究不了: $tech")
+        if (!can) {
+            // 说清缺哪几个前置，否则模型只会反复试同一个名字
+            val missing = ArrayList<String>()
+            val prereq = rs.technologies[tech]?.prerequisites ?: emptySet()
+            for (p in prereq) if (!civ.tech.isResearched(p)) missing.add(p)
+            val why = if (missing.isEmpty()) "现在研究不了: $tech（可能已被其它前置挡住）"
+            else "现在研究不了: $tech，缺前置 " + missing.joinToString("、")
+            throw Fail("NOT_AVAILABLE", why, ArrayList(rs.technologies.keys.filter {
+                it.lowercase().contains(tech.lowercase())
+            }.take(8)))
+        }
 
-        // techs 数组可以一次排好几项，省得科技一完成就空转一回合
+        // techs 数组可以一次排好几项，省得科技一完成就空转一回合。
+        // 合法但当前还不可研的也留着——等前置到手它自然能研；只有根本不存在的名字才丢，并报出来。
         val plan = ArrayList<String>()
         plan.add(tech)
+        val skipped = ArrayList<String>()
         for (o in queue) {
             val t = o as? String ?: continue
             if (t == tech) continue
-            if (!rs.technologies.containsKey(t)) continue
+            if (!rs.technologies.containsKey(t)) { skipped.add(t); continue }
             plan.add(t)
         }
         civ.tech.techsToResearch.clear()
         civ.tech.techsToResearch.addAll(plan)
-        events.add("""{"type":"research_set","tech":${q(tech)},"queue":[${quotedList(plan)}]}""")
+        events.add("""{"type":"research_set","tech":${q(tech)},"queue":[${quotedList(plan)}]""" +
+            (if (skipped.isEmpty()) "" else ""","skipped":[${quotedList(skipped)}]""") + "}")
     }
 
     private fun applyAttack(gi: GameInfo, actor: Civilization, target: String?, params: MutableMap<String, Any?>,

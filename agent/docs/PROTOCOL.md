@@ -237,7 +237,7 @@ Act (`kind: act`):
 | `build_improvement` | `improvement` | worker starts an improvement on its own tile; it must stay there, one turn of progress per turn |
 | `disband_unit` | — | removes the unit |
 | `set_city_production` | `city`, `item`, `count`, `mode` | `mode` defaults to `replace` (clears the queue first); `append` keeps what is already queued. The event echoes the engine's real queue, so `queued` is never a guess |
-| `set_research` | `tech`, `techs?` | `techs` queues several in order, so research does not idle for a turn when one completes |
+| `set_research` | `tech`, `techs?` | `techs` queues several in order, so research does not idle for a turn when one completes. Names that do not exist are dropped and echoed in `skipped`; a valid tech that is not yet researchable stays in the queue for when its prerequisites land. An unresearchable `tech` fails with the missing prerequisites listed |
 | `attack` | `unit`, `x`, `y` | melee/ranged; target must be reachable this turn. The target set is computed with the engine's own distance map (zone of control and escorts considered), so anything `/targets` lists can actually be attacked. If the engine refuses mid-attack, the error is `NOT_AVAILABLE` with its message — never `INTERNAL` |
 | `bombard` | `unit`, `x`, `y` | ranged only, unit stays put |
 | `promote_unit` | `unit`, `promotion` | must be in the unit's available promotions |
@@ -389,7 +389,11 @@ owning city for every tile in its territory, which is not what an attacker wants
 `GET /diplomacy` — `{"me":"Rome","known":[{civ,isCityState,atWar,canDeclareWar}]}`. Only met
 civilizations appear; the acting civilization is excluded.
 
-`GET /policies` — `{"adopted":[…],"culture":N,"cultureNeededForNextPolicy":M,"canAdoptPolicy":bool,"adoptableBranches":[…],"tree":[{branch,policies:[{name,adopted,requires,ready}]}]}`.
+`GET /policies` — `{"adopted":[…],"culture":N,"cultureNeededForNextPolicy":M,"canAdoptPolicy":bool,"adoptableBranches":[…],"tree":[{branch,policies:[{name,adopted,requires,opener,ready}]}]}`.
+The branch opener is the first entry of its own `policies` list with `opener:true`, so a caller
+walking `tree` for `ready:true` never misses the only adoptable choice. `ready` comes from the
+engine's `isAdoptable`, which accounts for prerequisites, era and branch membership — it is not
+just "requires are met".
 `tree` covers every branch in the ruleset, so sub-policies are visible before the branch is
 opened; `ready` means prerequisites are met (culture is a separate question).
 

@@ -395,8 +395,9 @@ object Agent {
             }
 
             if (path == "/actions" && method == "GET") {
-                val u = intq(ex, "unit")
-                if (u == null) { send(ex, 400, err("需要 ?unit=<id>")); return }
+                // 和 /intent 的 target 一样接受 "unit-17" 或 "17"，文档一直写的是 unit=<id>
+                val u = intq(ex, "unit") ?: query(ex, "unit")?.removePrefix("unit-")?.toIntOrNull()
+                if (u == null) { send(ex, 400, err("需要 ?unit=<id>，可写 17 或 unit-17")); return }
                 send(ex, 200, actionsJson(need(), actor!!, u))
                 return
             }
@@ -1146,6 +1147,10 @@ object Agent {
             ""","visible":${t.isVisible(c)}""" +
             ""","resource":${t.resource?.let { quote(it) } ?: "null"}""" +
             ""","improvement":${t.improvement?.let { quote(it) } ?: "null"}""" +
+            ""","improvementInProgress":${t.improvementInProgress?.let { quote(it) } ?: "null"}""" +
+            ""","turnsToImprovement":${t.turnsToImprovement}""" +
+            ""","road":${t.getUnpillagedRoad().name != "None"}""" +
+            ""","owner":${t.getOwner()?.let { quote(it.civName) } ?: "null"}""" +
             ""","yields":${tileYields(t, c)}""" +
             ""","city":$cityJson""" +
             "}"
@@ -1186,18 +1191,21 @@ object Agent {
                 if (!firstBranch) tree.append(',')
                 firstBranch = false
                 tree.append("""{"branch":""").append(quote(b.name)).append(""","policies":[""")
-                var firstPolicy = true
+                // 分支开篇本身也是一条政策，之前只出现在 adoptableBranches 里，
+                // 照着 tree 找 ready 的人会以为无政策可选（有一局因此 674 文化、0 政策）
+                tree.append("""{"name":""").append(quote(b.name))
+                    .append(""","adopted":""").append(c.policies.isAdopted(b.name))
+                    .append(""","requires":[]""")
+                    .append(""","opener":true""")
+                    .append(""","ready":""").append(c.policies.isAdoptable(b))
+                    .append('}')
                 for (p in b.policies) {
-                    if (!firstPolicy) tree.append(',')
-                    firstPolicy = false
-                    val isAdopted = c.policies.isAdopted(p.name)
-                    var requiresMet = true
-                    for (req in p.requires ?: emptyList())
-                        if (!c.policies.isAdopted(req)) requiresMet = false
+                    tree.append(',')
                     tree.append("""{"name":""").append(quote(p.name))
-                        .append(""","adopted":""").append(isAdopted)
+                        .append(""","adopted":""").append(c.policies.isAdopted(p.name))
                         .append(""","requires":[""").append(joinQuoted(p.requires ?: emptyList())).append(']')
-                        .append(""","ready":""").append(!isAdopted && requiresMet)
+                        .append(""","opener":false""")
+                        .append(""","ready":""").append(c.policies.isAdoptable(p))
                         .append('}')
                 }
                 tree.append("]}")
@@ -1369,7 +1377,7 @@ object Agent {
                 .append(""","canAttack":""").append(u.canAttack())
                 .append(""","canPromote":""").append(u.promotions.canBePromoted())
             // 工人：这格能造什么，别让模型自己翻规则
-            if (u.cache.hasUniqueToBuildImprovements) {
+            if (u.cache.hasUniqueToBuildImprovements && !u.getTile().isCityCenter()) {
                 sb.append(""","canBuild":[""")
                 var n = 0
                 for (ti in u.getTile().ruleset.tileImprovements.values) {
