@@ -1029,10 +1029,12 @@ object Agent {
         val sb = StringBuilder("""{"center":[""").append(centerX).append(',').append(centerY)
             .append("""],"radius":""").append(r).append(""","tiles":[""")
         var first = true
+        var unexplored = 0
         for (dx in -r..r) {
             for (dy in -r..r) {
                 val t = Kernel.tileAt(gi, centerX + dx, centerY + dy)
-                if (t == null || !t.isExplored(c)) continue
+                if (t == null) continue
+                if (!t.isExplored(c)) { unexplored++; continue }
                 if (!first) sb.append(',')
                 first = false
                 sb.append("""{"x":""").append(t.position.x)
@@ -1084,7 +1086,8 @@ object Agent {
                 sb.append('}')
             }
         }
-        return sb.append("]}").toString()
+        // 半径内没探索的格子不计入 tiles，但要说清有多少，否则会以为半径参数没生效
+        return sb.append("""],"unexplored":""").append(unexplored).append('}').toString()
     }
 
     fun eventsJson(gi: GameInfo, c: Civilization, limit: Int?): String {
@@ -1403,6 +1406,10 @@ object Agent {
                     var n = 0
                     for (at in list) {
                         val t = at.tileToAttack
+                        // 城邦和没开战的文明，单位在射程里也打不了，列出来只会让人白试
+                        val defender = at.combatant
+                        val dc = defender?.getCivInfo()
+                        if (dc != null && dc !== c && !dc.isBarbarian && !c.isAtWarWith(dc)) continue
                         val key = "${t.position.x},${t.position.y}"
                         if (!seen.add(key)) continue
                         if (n++ > 0) sb.append(',')
@@ -1762,11 +1769,21 @@ object Agent {
                     if (!seen.add(res)) continue
                     if (!first) sb.append(',')
                     first = false
+                    // 这块地缺哪个设施、现在能不能造——不然只能从 canBuild 里猜
+                    var needs: String? = null
+                    var canBuildNow = false
+                    try {
+                        val ctx = com.unciv.models.ruleset.unique.GameContext(c)
+                        needs = tr.getImprovements().firstOrNull()
+                        canBuildNow = tr.getImprovingImprovement(t, ctx) != null
+                    } catch (ignored: Throwable) { }
                     sb.append("""{"name":""").append(quote(res))
                         .append(""","at":[""").append(t.position.x).append(',')
                         .append(t.position.y).append(']')
                         .append(""","improvement":""").append(if (t.improvement == null)
                             "null" else quote(t.improvement!!))
+                        .append(""","needs":""").append(needs?.let { quote(it) } ?: "null")
+                        .append(""","canBuildNow":""").append(canBuildNow)
                         .append('}')
                 }
             }
@@ -2187,7 +2204,15 @@ object Agent {
             val influence = if (dm == null) 0 else dm.influence.toInt()
             val ally = cs.allyCiv
 
+            // 城邦首都坐标：建城间距会卡城邦，但之前没有任何接口能读到它们在哪儿
+            var at: String = "null"
+            try {
+                val capital = cs.getCapital()
+                if (capital != null && c.hasExplored(capital.getCenterTile()))
+                    at = """[${capital.location.x},${capital.location.y}]"""
+            } catch (ignored: Throwable) { }
             sb.append("""{"civ":""").append(quote(cs.civName))
+                .append(""","at":""").append(at)
                 .append(""","influence":""").append(influence)
                 .append(""","ally":""").append(if (ally == null) "null" else quote(ally.civName))
                 .append(""","atWar":""").append(c.isAtWarWith(cs))

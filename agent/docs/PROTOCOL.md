@@ -234,7 +234,7 @@ Act (`kind: act`):
 |---|---|---|
 | `move_unit` | `unit`, `x`, `y` | moves toward the tile: exactly if it is reachable this turn, otherwise as far as the path allows. The event carries `arrived`, `tilesLeft` and `blockedBy` (set when the destination is occupied, which is why a move can stop short and still report ok). A tile the unit can never reach is `ILLEGAL_TARGET`; no movement left is `NOT_AVAILABLE` |
 | `found_city` | `unit` | settler must be able to found here |
-| `build_improvement` | `improvement` | worker starts an improvement on its own tile; it must stay there, one turn of progress per turn |
+| `build_improvement` | `target` = worker, `improvement` | starts an improvement on the worker's own tile; it must stay there, one turn of progress per turn. `improvement` must be one of the names in that unit's `canBuild` — the tile, not the ruleset, decides |
 | `disband_unit` | — | removes the unit |
 | `set_city_production` | `city`, `item`, `count`, `mode` | `mode` defaults to `replace` (clears the queue first); `append` keeps what is already queued. The event echoes the engine's real queue, so `queued` is never a guess |
 | `set_research` | `tech`, `techs?` | `techs` queues several in order, so research does not idle for a turn when one completes. Names that do not exist are dropped and echoed in `skipped`; a valid tech that is not yet researchable stays in the queue for when its prerequisites land. An unresearchable `tech` fails with the missing prerequisites listed |
@@ -369,7 +369,8 @@ currency that would work — so a purchase attempt never has to be trial and err
 Note the candidates here are objects, unlike intent errors where they are strings.
 
 `GET /map?cx&cy&radius` — `radius` defaults to 3 and is clamped to `0..12`; `cx`/`cy` default
-to `0,0`. Only tiles explored by the acting civilization are returned:
+to `0,0`. **Only explored tiles are returned**, so a radius with nothing in it may mean
+"unexplored" rather than "empty"; the response says which with `unexplored` (a count). Tiles:
 `{"center":[cx,cy],"radius":r,"tiles":[{x,y,terrain,visible,resource?,owner?,city?,improvement?,
 improvementInProgress?,turnsToImprovement?,road?,railroad?,units?}]}`.
 `units` lists the units standing on a tile you can see — `{id,own,owner,name,hp,military}`,
@@ -448,10 +449,11 @@ missing line means zero, not unknown.
             "science":4.0,"culture":1.0,"faith":0.0}]}
 ```
 
-`GET /resources` — `{"luxuries":{"connected":[{name,count}],"unconnected":[{name,at,improvement}]},
+`GET /resources` — `{"luxuries":{"connected":[{name,count}],"unconnected":[{name,at,improvement,needs,canBuildNow}]},
 "strategic":[{name,count}]}`. `unconnected` lists luxury resources on tiles your cities can work
-that no improvement has connected yet, with the tile, so the missing improvement is visible
-instead of inferred from a happiness number.
+that no improvement has connected yet. `needs` is the improvement that would connect it and
+`canBuildNow` says whether a worker could start it today, so a resource that stays dark is a
+visible problem (missing tech) rather than a mystery.
 
 `GET /reachable?unit=` — every tile the unit can reach this turn, sorted by cost:
 `{"from":[x,y],"moves":2.0,"tiles":[{x,y,cost,terrain,city?,improvement?}],"count":N}`. This is the
@@ -535,7 +537,10 @@ one-shot items. Gold entries carry the whole treasury as `amount` — clamp it y
 Otherwise `{"enabled":true,"state":"None|Pantheon|FoundingReligion|Religion|EnhancingReligion|EnhancedReligion","faith","faithForPantheon","religion","beliefs":[{name,type}],"availableBeliefs":[{name,type}],"mustChoose":{type:count}}`.
 `mustChoose` is what the next `choose_beliefs` call has to supply.
 
-`GET /citystates` — `{"cityStates":[{civ,influence,ally,atWar,canPledgeProtection,giftInfluence:[{gold,influence}],quests:[{name,description,influence,turnsLeft}]}]}`.
+`GET /citystates` — `{"cityStates":[{civ,at,influence,ally,atWar,canPledgeProtection,giftInfluence:[{gold,influence}],quests:[{name,description,influence,turnsLeft}]}]}`.
+`at` is the city-state's capital position once you have explored it, `null` before — city-states
+block settling within the same distance as anyone else, so knowing where they are is the
+difference between a settler that walks somewhere useful and one that idles.
 Only city-states the acting civilization has met appear. `influence` is read from the
 city-state's side of the relationship, which is where the engine keeps it. `turnsLeft` is
 `-1` for quests without a deadline.

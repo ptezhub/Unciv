@@ -867,6 +867,18 @@ object Kernel {
             throw Fail("UNKNOWN_ID", "没有这个政策: $name", candidates)
         }
         if (actor.policies.isAdopted(name)) throw Fail("NOT_AVAILABLE", "已经采纳过 $name")
+        // 先把两种"不可采纳"分开说：规则不允许 vs 文化不够
+        var adoptable = true
+        try { adoptable = actor.policies.isAdoptable(policy) } catch (ignored: Throwable) { }
+        if (!adoptable)
+            throw Fail("NOT_AVAILABLE", "现在不能采纳 $name：前置政策未开、时代不够，或它属于还没开启的分支")
+        var canNow = true
+        try { canNow = actor.policies.canAdoptPolicy() } catch (ignored: Throwable) { }
+        if (!canNow) {
+            val stored = try { actor.policies.storedCulture } catch (e: Throwable) { 0 }
+            val need = try { actor.policies.getCultureNeededForNextPolicy() } catch (e: Throwable) { 0 }
+            throw Fail("NOT_AVAILABLE", "文化不够：已有 $stored，下一条政策要 $need")
+        }
         try {
             actor.policies.adopt(policy, false)
         } catch (e: Throwable) {
