@@ -1271,6 +1271,35 @@ public class Agent {
         }
         sb.append(']');
 
+        // 金币与快乐的逐项来源：UI 的 Stats 页就是这张表
+        sb.append(",\"goldBreakdown\":[");
+        try {
+            com.unciv.models.stats.StatMap statMap = c.getStats().getStatMapForNextTurn();
+            boolean firstGold = true;
+            for (Map.Entry<String, com.unciv.models.stats.Stats> e : statMap.entrySet()) {
+                float g = e.getValue().getGold();
+                if (Math.abs(g) < 0.05f) continue;
+                if (!firstGold) sb.append(',');
+                firstGold = false;
+                sb.append("{\"cause\":").append(quote(e.getKey()))
+                  .append(",\"gold\":").append(round1(g)).append('}');
+            }
+        } catch (Throwable ignored) { }
+        sb.append(']');
+        sb.append(",\"happinessBreakdown\":[");
+        try {
+            java.util.HashMap<String, Float> hb = c.getStats().getHappinessBreakdown();
+            boolean firstHap = true;
+            for (Map.Entry<String, Float> e : hb.entrySet()) {
+                if (Math.abs(e.getValue()) < 0.05f) continue;
+                if (!firstHap) sb.append(',');
+                firstHap = false;
+                sb.append("{\"cause\":").append(quote(e.getKey()))
+                  .append(",\"value\":").append(round1(e.getValue())).append('}');
+            }
+        } catch (Throwable ignored) { }
+        sb.append(']');
+
         // 已研究的科技：/techs 只列可研究的，回答不了「我会不会造种植园」
         sb.append(",\"techsKnown\":[");
         boolean firstTech = true;

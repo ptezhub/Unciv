@@ -406,6 +406,12 @@ turn by turn, so `turnsToReach` is an estimate, not a promise — treat it as "a
 cannot enter the tile at all gets a route only if one exists; otherwise `turnsToReach` is `null`
 and `path` is empty.
 
+`goldBreakdown` and `happinessBreakdown` are the same per-cause tables the empire overview
+shows, straight from `getStatMapForNextTurn()` and `getHappinessBreakdown()`: `Unit upkeep`,
+`Transportation upkeep`, `Buildings`, `Tile yields`, `Trade`, city names, `Base happiness`,
+`Population`, `Cities`. Zero causes are dropped. This is how you tell a -14/turn from "too many
+units" apart from "too many buildings" without opening every city.
+
 `techsKnown` is everything already researched — `/techs` only lists what is available, which
 cannot answer "can I build a plantation yet". `luxuries.unconnected` lists luxury resources on
 tiles your cities can work that no improvement has connected yet, with the tile, so the fix is
@@ -452,6 +458,9 @@ prompt. It aggregates what the client would show:
  "culture":88,"culturePerTurn":3.0,"cultureForNextPolicy":45,
  "faith":12,"faithPerTurn":2.0,"happiness":4,
  "research":{"current":"Pottery","turnsLeft":3,"available":4},
+ "goldBreakdown":[{"cause":"Buildings","gold":3.0},{"cause":"Tile yields","gold":2.0}],
+ "happinessBreakdown":[{"cause":"Base happiness","value":15.0},
+                       {"cause":"Population","value":-0.4},{"cause":"Cities","value":-1.2}],
  "techsKnown":["Agriculture","Pottery",…],
  "luxuries":{"connected":[{"name":"Gems","count":1}],
              "unconnected":[{"name":"Cotton","at":[5,0],"improvement":null}]},
