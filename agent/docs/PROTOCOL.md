@@ -415,6 +415,14 @@ stops there. Anything you would have to click into a screen for has its own rout
 the per-cause tables, `/resources` for resources, `/city/{id}` for one city's tiles, `/techs` for
 the tech list. Ask for them when a number looks wrong instead of paying for them every turn.
 
+## Request trace
+
+Set `UNCIV_AGENT_TRACE=/path/to/trace.jsonl` when starting the host and every request appends one
+line: timestamp, method, path, query, body (capped at 4 KB), turn, status, response size, elapsed
+ms. That is the whole game as the agent played it — what it asked, in what order, and what came
+back — independent of whether anyone wrote a report afterwards. Off by default; the file is
+append-only, so one run per file.
+
 `GET /stats` — the empire overview's Stats tab. `perTurn` gives the totals, `causes` splits them
 by source (`Unit upkeep`, `Transportation upkeep`, `Buildings`, `Tile yields`, `Trade`, city
 names), `happinessCauses` splits happiness (`Base happiness`, `Population`, `Cities`,

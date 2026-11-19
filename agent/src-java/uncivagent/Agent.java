@@ -219,6 +219,7 @@ public class Agent {
             String path = ex.getRequestURI().getPath();
             while (path.length() > 1 && path.endsWith("/")) path = path.substring(0, path.length() - 1);
             String method = ex.getRequestMethod().toUpperCase();
+            Trace.begin(method, path, ex.getRequestURI().getRawQuery());
 
             // ---- 官方客户端协议 ----
             if (path.equals("/isalive")) { send(ex, 200, "{\"online\":true}"); return; }
@@ -536,15 +537,66 @@ public class Agent {
         return sb.append("]}").toString();
     }
 
+    /** 逐请求轨迹：UNCIV_AGENT_TRACE=<file> 打开，一行一个 JSON，够复盘整局。
+     *  记的是接口层，不依赖模型自己写报告。 */
+    static final class Trace {
+        static final String PATH = System.getenv("UNCIV_AGENT_TRACE");
+        static final boolean ON = PATH != null && !PATH.isEmpty();
+        private static final ThreadLocal<StringBuilder> CUR = new ThreadLocal<>();
+        private static final ThreadLocal<Long> T0 = new ThreadLocal<>();
+
+        static void begin(String method, String path, String query) {
+            if (!ON) return;
+            T0.set(System.currentTimeMillis());
+            StringBuilder sb = new StringBuilder("{\"ts\":").append(System.currentTimeMillis())
+                    .append(",\"method\":").append(quote(method))
+                    .append(",\"path\":").append(quote(path));
+            if (query != null && !query.isEmpty()) sb.append(",\"query\":").append(quote(query));
+            CUR.set(sb);
+        }
+
+        static void body(String body) {
+            if (!ON) return;
+            StringBuilder sb = CUR.get();
+            if (sb == null || body == null || body.isEmpty()) return;
+            sb.append(",\"body\":").append(quote(body.length() > 4000 ? body.substring(0, 4000) : body));
+        }
+
+        static void end(int status, String response) {
+            if (!ON) return;
+            StringBuilder sb = CUR.get();
+            if (sb == null) return;
+            CUR.remove();
+            Long t0 = T0.get();
+            T0.remove();
+            int turn = -1;
+            try { turn = gameInfo == null ? -1 : gameInfo.getTurns(); } catch (Throwable ignored) { }
+            sb.append(",\"turn\":").append(turn < 0 ? "null" : String.valueOf(turn))
+              .append(",\"status\":").append(status)
+              .append(",\"bytes\":").append(response == null ? 0
+                      : response.getBytes(StandardCharsets.UTF_8).length);
+            if (t0 != null) sb.append(",\"ms\":").append(System.currentTimeMillis() - t0);
+            sb.append("}\n");
+            synchronized (Trace.class) {
+                try (java.io.FileWriter fw = new java.io.FileWriter(PATH, true)) {
+                    fw.write(sb.toString());
+                } catch (Throwable ignored) { }
+            }
+        }
+    }
+
     private static void send(HttpExchange ex, int code, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         ex.getResponseHeaders().add("Content-Type", "application/json; charset=utf-8");
         ex.sendResponseHeaders(code, bytes.length);
         try (OutputStream os = ex.getResponseBody()) { os.write(bytes); }
+        Trace.end(code, body);
     }
 
     private static String readBody(HttpExchange ex) throws IOException {
-        return new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        String body = new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8);
+        Trace.body(body);
+        return body;
     }
 
     private static String query(HttpExchange ex, String key) {
