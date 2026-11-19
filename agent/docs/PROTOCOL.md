@@ -234,9 +234,9 @@ Act (`kind: act`):
 
 | Tool | Params | Notes |
 |---|---|---|
-| `move_unit` | `unit`, `x`, `y` | moves toward the tile: exactly if it is reachable this turn, otherwise as far as the path allows. The event carries `arrived`, `tilesLeft` and `blockedBy` (set when the destination is occupied, which is why a move can stop short and still report ok). A tile the unit can never reach is `ILLEGAL_TARGET`; no movement left is `NOT_AVAILABLE` |
+| `move_unit` | `unit`, `x`, `y` | moves toward the tile: exactly if it is reachable this turn, otherwise as far as the path allows. The event carries `arrived`, `pathOk`, `tilesLeft` and `blockedBy` (set when the destination is occupied, which is why a move can stop short and still report ok). `pathOk:false` means the destination is no longer reachable from where the unit now stands — stop retrying it. A tile the unit can never reach is `ILLEGAL_TARGET`; no movement left is `NOT_AVAILABLE` |
 | `found_city` | `unit` | settler must be able to found here |
-| `build_improvement` | `target` = worker, `improvement` | starts an improvement on the worker's own tile; it must stay there, one turn of progress per turn. `improvement` must be one of the names in that unit's `canBuild` — the tile, not the ruleset, decides |
+| `build_improvement` | `target` = worker, `improvement` | starts an improvement on the worker's own tile; it must stay there, one turn of progress per turn. `improvement` must be one of the names in that unit's `canBuild`, or in `canBuildAfterRemoval` — the tile, not the ruleset, decides. When the tile's top terrain has to go first (jungle on a resource), one call queues `Remove Jungle` and then the improvement, exactly like clicking it in the picker: the event is `improvement_queued` with the `queue` |
 | `disband_unit` | — | removes the unit |
 | `set_city_production` | `city`, `item`, `count`, `mode` | `mode` defaults to `replace` (clears the queue first); `append` keeps what is already queued. The event echoes the engine's real queue, so `queued` is never a guess |
 | `set_research` | `tech`, `techs?` | `techs` queues several in order, so research does not idle for a turn when one completes. Names that do not exist are dropped and echoed in `skipped`; a valid tech that is not yet researchable stays in the queue for when its prerequisites land. An unresearchable `tech` fails with the missing prerequisites listed |
@@ -453,17 +453,21 @@ missing line means zero, not unknown.
             "science":4.0,"culture":1.0,"faith":0.0}]}
 ```
 
-`GET /resources` — `{"luxuries":{"connected":[{name,count}],"unconnected":[{name,at,improvement,needs,canBuildNow}]},
+`GET /resources` — `{"luxuries":{"connected":[{name,count}],"unconnected":[{name,at,improvement,needs,canBuildNow,needsRemoval,blockedBy}]},
 "strategic":[{name,count}]}`. `unconnected` lists luxury resources on tiles your cities can work
 that no improvement has connected yet. `needs` is the improvement that would connect it and
-`canBuildNow` says whether a worker could start it today, so a resource that stays dark is a
-visible problem (missing tech) rather than a mystery.
+`canBuildNow` says whether a worker could start it today; `needsRemoval` names the terrain
+removal that has to come first (jungle on spices), and `blockedBy` names the problem that is
+left when neither works (missing tech, outside borders), so a resource that stays dark is a
+visible problem rather than a mystery.
 
 `GET /preview_city_site?x=&y=` — `{"at","canSettle","reason","terrain","nearestCity","nearestOwner",
-"nearestDistance","minDistance","resource"}`. `minDistance` is the smallest legal gap (the
-ruleset's `minimalCityDistance` plus one), and `reason` names whichever city is actually blocking
-you — yours or theirs. A settler that walks to a spot and only then learns it cannot settle has
-paid several turns for nothing; ask first.
+"nearestDistance","minDistance","minDistanceSameContinent","minDistanceDifferentContinent","resource"}`.
+`minDistance` is the smallest legal gap that actually applies to this tile (the ruleset's
+`minimalCityDistance` plus one on the same continent, `minimalCityDistanceOnDifferentContinents`
+plus one across water), and `reason` names whichever city is actually blocking you — yours or
+theirs. A settler that walks to a spot and only then learns it cannot settle has paid several
+turns for nothing; ask first.
 
 `GET /reachable?unit=` — every tile the unit can reach this turn, sorted by cost:
 `{"from":[x,y],"moves":2.0,"tiles":[{x,y,cost,terrain,city?,improvement?}],"count":N}`. This is the
@@ -512,7 +516,8 @@ prompt. It aggregates what the client would show:
  "cities":[{"id","name","pop","at","foodPerTurn","turnsToGrowth","production","turnsToBuild",
             "isPuppet","inResistance","health","canBombard","enemyAdjacent"}],
  "unitsNeedingOrders":[{"id","name","x","y","moves","military","civilian","canAttack","canPromote",
-                        "canBuild":["Farm","Mine",…],"workingOn":"Farm","turnsLeft":3,
+                        "canBuild":["Farm","Mine",…],"canBuildAfterRemoval":["Plantation（先建 Remove Jungle）"],
+                        "workingOn":"Farm","turnsLeft":3,
                         "attackable":[{x,y,type}]}],
  "diplomacy":{"known":[{civ,isCityState,atWar,canDeclareWar,influence}]},
  "cityStates":[{civ,influence,ally}],
@@ -523,12 +528,15 @@ prompt. It aggregates what the client would show:
 ```
 
 `unitsNeedingOrders` is only the units that still have movement, so an empty list means the
-turn is ready to end. A worker also carries `canBuild` (what it can start on its own tile),
-`workingOn` and `turnsLeft`; a unit that can attack carries `attackable`, the tiles it can hit
-this turn, so nothing has to compute hex geometry. Both are capped, so use `get_targets` or
-`build_improvement`'s error for the full picture. `enemyAdjacent` is true when a foreign military unit stands next to a
-city. `warnings` is the same list `end_turn` returns, so a model that reads the briefing can
-act before it loses a turn.
+turn is ready to end. A worker also carries `canBuild` (what it can start on its own tile right
+now), `canBuildAfterRemoval` (what works once the tile's top terrain is gone — jungle on spices,
+forest on a hill), `workingOn` and `turnsLeft`. `canBuild` is the picker's list, not a guess:
+improvements that do not belong on this tile are left out instead of padding the array, and the
+array is not truncated. A unit that can attack carries `attackable`, the tiles it can hit this
+turn, so nothing has to compute hex geometry; that one is capped, use `get_targets` for the full
+picture. `enemyAdjacent` is true when a foreign military unit stands next to a city. `warnings`
+is the same list `end_turn` returns, so a model that reads the briefing can act before it loses
+a turn.
 
 `GET /techs` — `{"researching","sciencePerTurn","available":[{name,cost,remaining,turns}],"researched":[...]}`.
 `researched` is what you already have, which is what answers "can I build a plantation yet".

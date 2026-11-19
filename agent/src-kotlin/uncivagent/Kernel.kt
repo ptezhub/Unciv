@@ -32,6 +32,7 @@ import com.unciv.models.UnitActionType
 import com.unciv.models.ruleset.Belief
 import com.unciv.models.ruleset.BeliefType
 import com.unciv.models.ruleset.Ruleset
+import com.unciv.models.ruleset.tile.TileImprovement
 import com.unciv.models.ruleset.unit.Promotion
 
 /**
@@ -258,6 +259,38 @@ object Kernel {
 
     // ---------- 各动作 ----------
 
+    /** 这个单位有没有可能走到 dest（不看这回合还剩多少移动力）。
+     *  引擎的 canReach 会走 getShortestPath，移动力为 0 时会误报走不到，
+     *  所以这里自己做一次 BFS：中间格要求能通过，目标格只要求能进入（占用另算）。 */
+    @JvmStatic
+    fun canEverReach(unit: MapUnit, dest: Tile): Boolean {
+        val start = unit.getTile()
+        if (start.position == dest.position) return true
+        if (unit.baseUnit.isAirUnit()) {
+            return try {
+                start.aerialDistanceTo(dest) <= unit.getAirUnitMovementRange()
+            } catch (ignored: Throwable) { false }
+        }
+        val seen = HashSet<HexCoord>()
+        val queue = java.util.ArrayDeque<Tile>()
+        queue.add(start)
+        seen.add(start.position)
+        var n = 0
+        while (queue.isNotEmpty() && n < 6000) {
+            val t = queue.removeFirst()
+            n++
+            for (nb in t.neighbors) {
+                if (!seen.add(nb.position)) continue
+                if (nb.position == dest.position) {
+                    return try { unit.movement.canPassThrough(nb) } catch (ignored: Throwable) { false }
+                }
+                val passable = try { unit.movement.canPassThrough(nb) } catch (ignored: Throwable) { false }
+                if (passable) queue.add(nb)
+            }
+        }
+        return false
+    }
+
     private fun applyMove(gi: GameInfo, actor: Civilization, target: String?, params: MutableMap<String, Any?>, events: MutableList<String>) {
         val unit = requireOwnUnit(gi, actor, target)
         val x = integer(params, "x")
@@ -271,13 +304,7 @@ object Kernel {
         if (unit.currentMovement <= 0.05f)
             throw Fail("NOT_AVAILABLE", "这个单位这回合已经没有移动力了")
 
-        var reachableAnywhere: Boolean
-        try {
-            reachableAnywhere = unit.movement.canReach(dest)
-        } catch (e: Throwable) {
-            reachableAnywhere = false
-        }
-        if (!reachableAnywhere)
+        if (!canEverReach(unit, dest))
             throw Fail("ILLEGAL_TARGET", "这个单位到不了 $x,$y（海陆不通或没有可走的路）")
 
         var reachable: Boolean
@@ -296,6 +323,12 @@ object Kernel {
         val arrived = to.x == dest.position.x && to.y == dest.position.y
         val left = unit.getTile().aerialDistanceTo(dest)
         var blocked: String? = null
+        // canReach 会把没探索的格子当成可走，所以「这回合走不到」不等于「以后能到」。
+        // 走完之后再判一次，让调用方知道这条路到底通不通。
+        var pathOk = true
+        if (!arrived) {
+            pathOk = canEverReach(unit, dest)
+        }
         if (!arrived) {
             val uit = dest.getUnits().iterator()
             if (uit.hasNext()) {
@@ -306,8 +339,10 @@ object Kernel {
         }
         if (!arrived && blocked == null) {
             // 没走到、也没人挡着：就是这回合的路到头了，或者根本走不到
-            if (left > 0) {
+            if (left > 0 && pathOk) {
                 blocked = "这回合只走到这里，还差 $left 格；下回合继续"
+            } else if (left > 0) {
+                blocked = "这回合只走到这里，还差 $left 格，但从这里已经没有能走过去的路线了（换目标或换单位）"
             } else {
                 throw Fail("ILLEGAL_TARGET", "走不到 $x,$y：这个单位进不了那种地形（水陆不通或不可通行），没有移动")
             }
@@ -318,6 +353,7 @@ object Kernel {
                 ""","to":[${to.x},${to.y}]""" +
                 ""","target":[${dest.position.x},${dest.position.y}]""" +
                 ""","arrived":$arrived""" +
+                ""","pathOk":$pathOk""" +
                 ""","blockedBy":${blocked?.let { q(it) } ?: "null"}""" +
                 ""","tilesLeft":$left""" +
                 ""","moves":${unit.currentMovement}}"""
@@ -376,6 +412,54 @@ object Kernel {
 
     /** 工人造设施：引擎的入口在 UI 层（ImprovementPickerScreen），逻辑层只有
      *  Tile.startWorkingOnImprovement + 每回合 UnitTurnManager.endTurn 里的 doWorkerTurn。 */
+    /** 一格上造某个设施的判定结果。三态：现在就能造 / 先去地形再能造 / 造不了。 */
+    class ImpVerdict(val okNow: Boolean, val removeFirst: String?, val problems: List<String>)
+
+    /** 和 UI 的 ImprovementPickerScreen 同一套规则：
+     *  1) 现在没有报错级问题 → 立刻能造；
+     *  2) 否则假装把最上层地形（Jungle/Forest/Marsh）去掉再判一次 → 先拆地形再能造；
+     *  3) 都不行 → 把问题名带出去。
+     *  非 reportable 的问题（如地形根本不对）意味着 UI 里压根不显示这个设施。 */
+    @JvmStatic
+    fun verdictFor(tile: Tile, unit: MapUnit, imp: TileImprovement): ImpVerdict {
+        val now = problemsOn(tile, unit, imp)
+        if (now.isEmpty()) return ImpVerdict(true, null, now)
+
+        val removal = topTerrainRemovalName(tile)
+        if (removal != null) {
+            try {
+                val alt = tile.clone(addUnits = false)
+                alt.setTerrainTransients()
+                alt.removeTerrainFeature(alt.lastTerrain.name)
+                if (problemsOn(alt, unit, imp).isEmpty()) return ImpVerdict(false, removal, now)
+            } catch (ignored: Throwable) { }
+        }
+        return ImpVerdict(false, null, now)
+    }
+
+    /** 挡路的报错级问题名。非 reportable 的也算进来（它们说明这格根本不适合这个设施）。 */
+    @JvmStatic
+    fun problemsOn(tile: Tile, unit: MapUnit, imp: TileImprovement): List<String> {
+        val out = ArrayList<String>()
+        try {
+            for (o in tile.improvementFunctions.getImprovementBuildingProblems(imp, unit.cache.state))
+                out.add(o.name)
+        } catch (ignored: Throwable) { }
+        return out
+    }
+
+    /** 这格最上层地形对应的「去掉它」设施名，没有就 null。 */
+    @JvmStatic
+    fun topTerrainRemovalName(tile: Tile): String? {
+        return try {
+            val last = tile.lastTerrain?.name ?: return null
+            val name = com.unciv.Constants.remove + last
+            if (tile.ruleset.tileImprovements.containsKey(name)) name else null
+        } catch (ignored: Throwable) {
+            null
+        }
+    }
+
     private fun applyBuildImprovement(gi: GameInfo, actor: Civilization, target: String?,
                                       params: MutableMap<String, Any?>, events: MutableList<String>) {
         val unit = requireOwnUnit(gi, actor, target)
@@ -414,17 +498,22 @@ object Kernel {
             throw Fail("NOT_AVAILABLE", unit.name + " 造不了 " + imp.name +
                 "：地形不符、缺前置科技，或这格不允许")
 
-        val problems = ArrayList<String>()
-        try {
-            val ctx = com.unciv.models.ruleset.unique.GameContext(unit)
-            for (o in tile.improvementFunctions.getImprovementBuildingProblems(imp, ctx)) {
-                if (o is com.unciv.logic.map.tile.ImprovementBuildingProblem) {
-                    if (o.reportable) problems.add(o.name)
-                }
-            }
-        } catch (ignored: Throwable) { }
-        if (problems.isNotEmpty())
-            throw Fail("NOT_AVAILABLE", "这里造不了 " + imp.name + "：" + problems)
+        val verdict = verdictFor(tile, unit, imp)
+        if (!verdict.okNow) {
+            val removalName = verdict.removeFirst
+            if (removalName == null)
+                throw Fail("NOT_AVAILABLE", "这里造不了 " + imp.name + "：" + verdict.problems)
+            // 和 UI 里点一下自动排队一样：先去掉最上层地形，再接着建目标设施
+            val removalImp = rs.tileImprovements[removalName]!!
+            val removalTurns = removalImp.getTurnsToBuild(actor, unit)
+            tile.startWorkingOnImprovement(removalImp, actor, unit)
+            tile.queueImprovement(imp, actor, unit)
+            events.add(
+                """{"type":"improvement_queued","unit":${q("unit-" + unit.id)},"at":[${tile.position.x},${tile.position.y}],"queue":[""" +
+                    q(removalImp.name) + "," + q(imp.name) + """],"removeTurns":$removalTurns,"turns":${tile.turnsToImprovement},"note":${q("这格上面盖着 " + removalImp.name.removePrefix("Remove ") + "，先拆地形再建设施；工人留在这格不动，别派去干别的")}}"""
+            )
+            return
+        }
 
         val before = tile.improvement
         tile.startWorkingOnImprovement(imp, actor, unit)

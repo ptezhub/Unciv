@@ -184,6 +184,20 @@ So the reference line is not hard to beat with a competent opening. The interest
 model that hits expansion and science but zeroes economy — that pattern means it is spending
 without building, which is exactly what the second run did.
 
+One live run on a harder setting, for the King reference: Russia, six major civilizations plus
+five city-states, standard map, goal "still alive at turn 150". Result: alive at 150, 2 cities
+(pop 10 and 5), 19 techs, score 167, +17 gold, 4 happiness, Tradition complete. It settled its
+second city on turn 92 only because Mongolia had already blocked every other legal tile, and it
+survived one war (Mongolia, declared somewhere in 141-147, four catapults at the gates of the
+capital, peace bought on 150 after losing 7 units). Pace was ~3s per turn, so 150 turns is about
+8 minutes wall clock — fast enough that a spectator client polling every 10s sees the game jump
+2-3 turns per refresh.
+
+The number that matters here is not the score but the shape: a single-city Tradition game that
+never expanded until forced, and never declared war. It won because Mongolia waited 140 turns.
+Against a reference line this should count as a pass on survival and a weak pass on everything
+else; a model that picks the same line on a map where the neighbour is closer will die.
+
 ## What this does not cover
 
 Game-state-dependent paths: capturing a city, launching a nuke, stealing a tech, upgrading a

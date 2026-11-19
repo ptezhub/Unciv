@@ -1420,17 +1420,23 @@ object Agent {
                 .append(""","canPromote":""").append(u.promotions.canBePromoted())
             // 工人：这格能造什么，别让模型自己翻规则
             if (u.cache.hasUniqueToBuildImprovements && !u.getTile().isCityCenter()) {
-                sb.append(""","canBuild":[""")
-                var n = 0
-                for (ti in u.getTile().ruleset.tileImprovements.values) {
+                val ut = u.getTile()
+                val now = ArrayList<String>()
+                val later = ArrayList<String>()
+                for (ti in ut.ruleset.tileImprovements.values) {
+                    // 和 UI 的设施选择屏一样：跳过瞬建类（奇观设施）和这格已有的设施
+                    if (ti.turnsToBuild == -1 && ti.name != com.unciv.Constants.cancelImprovementOrder) continue
+                    if (ti.name == ut.improvement) continue
                     var ok = false
-                    try { ok = u.canBuildImprovement(ti, u.getTile()) } catch (ignored: Throwable) { }
+                    try { ok = u.canBuildImprovement(ti, ut) } catch (ignored: Throwable) { }
                     if (!ok) continue
-                    if (n++ > 0) sb.append(',')
-                    sb.append(quote(ti.name))
-                    if (n >= 8) break
+                    val v = Kernel.verdictFor(ut, u, ti)
+                    if (v.okNow) now.add(ti.name)
+                    else if (v.removeFirst != null) later.add(ti.name + "（先建 " + v.removeFirst + "）")
                 }
-                sb.append(']')
+                sb.append(""","canBuild":[""").append(now.joinToString(",") { quote(it) }).append(']')
+                if (later.isNotEmpty())
+                    sb.append(""","canBuildAfterRemoval":[""").append(later.joinToString(",") { quote(it) }).append(']')
                 val wip = u.getTile().improvementInProgress
                 sb.append(""","workingOn":""").append(if (wip == null) "null" else quote(wip))
                     .append(""","turnsLeft":""").append(u.getTile().turnsToImprovement)
@@ -1796,6 +1802,46 @@ object Agent {
     }
 
     /** 资源总览：奢侈品连没连、战略资源有多少。对应 UI 的 Resources 页。 */
+    class ResourceVerdict(val needs: String?, val canBuildNow: Boolean,
+                          val needsRemoval: String?, val blockedBy: String?)
+
+    /** 某块资源地上，用哪个设施接、现在能不能接。没有工人上下文，所以只能按文明判科技/领土。 */
+    private fun resourceVerdict(gi: GameInfo, c: Civilization, t: com.unciv.logic.map.tile.Tile,
+                                tr: com.unciv.models.ruleset.tile.TileResource): ResourceVerdict {
+        var needs: String? = tr.getImprovements().firstOrNull()
+        var canBuildNow = false
+        var needsRemoval: String? = null
+        var firstBlock: String? = null
+        try {
+            val ctx = com.unciv.models.ruleset.unique.GameContext(c)
+            for (cn in tr.getImprovements()) {
+                val imp = gi.ruleset.tileImprovements[cn] ?: continue
+                val probs = ArrayList<String>()
+                for (o in t.improvementFunctions.getImprovementBuildingProblems(imp, ctx)) probs.add(o.name)
+                if (probs.isEmpty()) {
+                    needs = cn; canBuildNow = true; needsRemoval = null
+                    break
+                }
+                val rm = Kernel.topTerrainRemovalName(t)
+                if (rm != null) {
+                    try {
+                        val alt = t.clone(addUnits = false)
+                        alt.setTerrainTransients()
+                        alt.removeTerrainFeature(alt.lastTerrain.name)
+                        val p2 = ArrayList<String>()
+                        for (o in alt.improvementFunctions.getImprovementBuildingProblems(imp, ctx)) p2.add(o.name)
+                        if (p2.isEmpty()) {
+                            needs = cn; canBuildNow = false; needsRemoval = rm
+                            continue
+                        }
+                    } catch (ignored: Throwable) { }
+                }
+                if (firstBlock == null) firstBlock = probs.joinToString("/")
+            }
+        } catch (ignored: Throwable) { }
+        return ResourceVerdict(needs, canBuildNow, needsRemoval, if (canBuildNow || needsRemoval != null) null else firstBlock)
+    }
+
     fun resourcesJson(gi: GameInfo, c: Civilization): String {
         val sb = StringBuilder("""{"luxuries":{"connected":[""")
         var amounts: HashMap<String, Int>
@@ -1826,20 +1872,16 @@ object Agent {
                     if (!first) sb.append(',')
                     first = false
                     // 这块地缺哪个设施、现在能不能造——不然只能从 canBuild 里猜
-                    var needs: String? = null
-                    var canBuildNow = false
-                    try {
-                        val ctx = com.unciv.models.ruleset.unique.GameContext(c)
-                        needs = tr.getImprovements().firstOrNull()
-                        canBuildNow = tr.getImprovingImprovement(t, ctx) != null
-                    } catch (ignored: Throwable) { }
+                    val v = resourceVerdict(gi, c, t, tr)
                     sb.append("""{"name":""").append(quote(res))
                         .append(""","at":[""").append(t.position.x).append(',')
                         .append(t.position.y).append(']')
                         .append(""","improvement":""").append(if (t.improvement == null)
                             "null" else quote(t.improvement!!))
-                        .append(""","needs":""").append(needs?.let { quote(it) } ?: "null")
-                        .append(""","canBuildNow":""").append(canBuildNow)
+                        .append(""","needs":""").append(v.needs?.let { quote(it) } ?: "null")
+                        .append(""","canBuildNow":""").append(v.canBuildNow)
+                        .append(""","needsRemoval":""").append(v.needsRemoval?.let { quote(it) } ?: "null")
+                        .append(""","blockedBy":""").append(v.blockedBy?.let { quote(it) } ?: "null")
                         .append('}')
                 }
             }
@@ -1877,21 +1919,34 @@ object Agent {
         var nearestCity: String? = null
         var nearestOwner: String? = null
         var nearestDist = -1
+        var applMinDist = minDist + 1
         if (t.isWater) reason = "水面"
         else if (t.isImpassible()) reason = "不可通行地形"
         else {
+            // 引擎的规则：同大陆必须 > minimalCityDistance，跨大陆必须 > minimalCityDistanceOnDifferentContinents
+            var violDist = -1
+            var violLimit = -1
+            var violCity: String? = null
+            var violOwner: String? = null
             for (cv in gi.civilizations) {
                 for (city in cv.cities) {
-                    val d = t.aerialDistanceTo(city.getCenterTile())
+                    val ct = city.getCenterTile()
+                    val d = t.aerialDistanceTo(ct)
                     if (nearestDist < 0 || d < nearestDist) {
                         nearestDist = d; nearestCity = city.name; nearestOwner = cv.civName
                     }
+                    val sameContinent = try { ct.getContinent() == t.getContinent() } catch (e: Throwable) { true }
+                    val limit = if (sameContinent) minDist else minDistOther
+                    if (d <= limit && (violDist < 0 || d < violDist)) {
+                        violDist = d; violLimit = limit; violCity = city.name; violOwner = cv.civName
+                    }
                 }
             }
-            val limit = if (nearestDist >= 0 && nearestDist <= minDistOther) minDistOther else minDist
-            if (nearestDist in 0..limit)
-                reason = "离" + (if (nearestOwner == c.civName) "自己的城 " else "$nearestOwner 的城 ") +
-                    "$nearestCity 只有 $nearestDist 格，至少要 ${limit + 1} 格"
+            if (violCity != null) {
+                applMinDist = violLimit + 1
+                reason = "离" + (if (violOwner == c.civName) "自己的城 " else "$violOwner 的城 ") +
+                    "$violCity 只有 $violDist 格，至少要 ${violLimit + 1} 格"
+            }
             else if (t.owningCity != null && t.owningCity!!.civ !== c)
                 reason = "这里是 ${t.owningCity!!.civ.civName} 的领土"
             else if (!canSettle) reason = "地形不允许建城"
@@ -1904,7 +1959,9 @@ object Agent {
             ""","nearestCity":${nearestCity?.let { quote(it) } ?: "null"}""" +
             ""","nearestOwner":${nearestOwner?.let { quote(it) } ?: "null"}""" +
             ""","nearestDistance":${if (nearestDist < 0) "null" else nearestDist}""" +
-            ""","minDistance":${minDist + 1}""" +
+            ""","minDistance":$applMinDist""" +
+            ""","minDistanceSameContinent":${minDist + 1}""" +
+            ""","minDistanceDifferentContinent":${minDistOther + 1}""" +
             ""","resource":${t.resource?.let { quote(it) } ?: "null"}}"""
     }
 
