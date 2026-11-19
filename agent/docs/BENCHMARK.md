@@ -125,6 +125,17 @@ Everything else is on demand. A model that wants a building's description, a uni
 a policy's prerequisites can read the ruleset JSON under `android/assets/jsons/`, or ask the
 host — but the harness should not pre-chew decisions for it.
 
+## The goal, not the plan
+
+A run gets one objective and nothing else. The objective has to be something the game itself
+shows on a screen — a score, a turn survived, a city taken — because anything else is a number we
+invented. What it must not be is a prescription: "two workers by turn 20" is a solution, and a run
+that follows it tests obedience, not play. Report the metrics afterwards for analysis; never make
+them conditions.
+
+Current objective: survive to the agreed turn. Turn limit, difficulty and map are fixed per round
+so runs stay comparable; everything else is the player's problem.
+
 ## Scoring a played game
 
 The conformance suite scores the interface. A played game is scored separately, from the final
