@@ -125,6 +125,31 @@ Everything else is on demand. A model that wants a building's description, a uni
 a policy's prerequisites can read the ruleset JSON under `android/assets/jsons/`, or ask the
 host — but the harness should not pre-chew decisions for it.
 
+## Scoring a played game
+
+The conformance suite scores the interface. A played game is scored separately, from the final
+`/briefing` (or the `play_smoke` metrics block). The gate comes first: if `harness_errors` is
+non-empty the run is void — that is the harness, not the model.
+
+Everything else is normalised against a reference line for the difficulty and turn count, then
+weighted:
+
+| Dimension | Weight | Settler @ turn 50 | Prince @ turn 50 |
+|---|---|---|---|
+| Expansion (cities, then population) | 30 | 3 cities / 9 pop | 2 cities / 8 pop |
+| Science (techs) | 25 | 10 | 12 |
+| Economy (gold per turn) | 20 | +3 | +1 |
+| Happiness (not negative) | 15 | ≥ 0 | ≥ 0 |
+| Contact (known civilizations) | 10 | 3 | 3 |
+
+`value / reference`, capped at 1, except happiness which is 1 when ≥ 0 and 0 otherwise. Final
+score is the weighted sum × 100. A run that ends before the reference turn is scored on what it
+has, so dying early scores badly by construction.
+
+These numbers are provisional: they are set so the dumb `play_smoke` bot scores roughly 35-45
+on Settler at turn 50, which leaves room above it. If a model scores below the bot, that is a
+signal worth looking at, not a rounding error.
+
 ## What this does not cover
 
 Game-state-dependent paths: capturing a city, launching a nuke, stealing a tech, upgrading a
