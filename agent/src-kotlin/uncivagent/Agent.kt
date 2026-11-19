@@ -1723,6 +1723,23 @@ object Agent {
             }
         } catch (ignored: Throwable) { }
         sb.append(']')
+        // 分数：帝国总览的 Stats 页有一张 Score 表，顶栏也显示总分
+        try {
+            val breakdown = c.calculateScoreBreakdown()
+            var total = 0.0
+            for (v in breakdown.values) total += v
+            sb.append(""","score":""").append(Math.round(total))
+            sb.append(""","scoreCauses":[""")
+            var firstScore = true
+            for ((k, v) in breakdown) {
+                if (firstScore.not()) sb.append(',')
+                firstScore = false
+                sb.append("""{"cause":""").append(quote(k))
+                    .append(""","value":""").append(Math.round(v)).append('}')
+            }
+            sb.append(']')
+        } catch (ignored: Throwable) { }
+
         // 城市一级的产出，UI 的城市列表也是这么排的
         sb.append(""","cities":[""")
         var firstCity = true

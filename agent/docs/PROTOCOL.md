@@ -434,7 +434,9 @@ ms. That is the whole game as the agent played it — what it asked, in what ord
 back — independent of whether anyone wrote a report afterwards. Off by default; the file is
 append-only, so one run per file.
 
-`GET /stats` — the empire overview's Stats tab. `perTurn` gives the totals, `causes` splits them
+`GET /stats` — the empire overview's Stats tab. `score` and `scoreCauses` are that page's Score
+table (cities, population, tiles, wonders, technologies, future tech), so "how am I doing" has
+the same number the game itself shows. `perTurn` gives the totals, `causes` splits them
 by source (`Unit upkeep`, `Transportation upkeep`, `Buildings`, `Tile yields`, `Trade`, city
 names), `happinessCauses` splits happiness (`Base happiness`, `Population`, `Cities`,
 `Luxury resources`, …), and `cities` gives each city's own yields. Zero causes are dropped, so a
