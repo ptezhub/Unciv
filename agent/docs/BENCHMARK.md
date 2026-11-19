@@ -150,6 +150,19 @@ These numbers are provisional: they are set so the dumb `play_smoke` bot scores 
 on Settler at turn 50, which leaves room above it. If a model scores below the bot, that is a
 signal worth looking at, not a rounding error.
 
+Two real Settler runs so far, for calibration:
+
+- Military opening, turn 63: 3 cities, 10 pop, 9 techs, +3 gold. Took a city-state capital on
+  turn 63 after a 43-turn siege. Well above the reference on expansion, on the line for science.
+- Peaceful opening, turn 100: 3 cities, 21 pop, 18 techs, -14 gold/turn. Expansion and science
+  far above the line, economy at zero, because it overbuilt settlers (5 made, 3 settled) and
+  could not build a single improvement. That run is why economy is a separate dimension: the
+  score would have looked fine while the position was collapsing.
+
+So the reference line is not hard to beat with a competent opening. The interesting signal is a
+model that hits expansion and science but zeroes economy — that pattern means it is spending
+without building, which is exactly what the second run did.
+
 ## What this does not cover
 
 Game-state-dependent paths: capturing a city, launching a nuke, stealing a tech, upgrading a
