@@ -246,7 +246,9 @@ object Agent {
     private fun humanCivs(gi: GameInfo): List<Civilization> {
         val out = ArrayList<Civilization>()
         for (c in gi.civilizations) {
-            if (c.isHuman() && c.isAlive()) out.add(c)
+            // 旁观文明也是 Human（客户端靠这个匹配座位），但它不出回合，
+            // 算进"等谁交回合"会让整局卡死
+            if (c.isHuman() && c.isAlive() && !c.isSpectator) out.add(c)
         }
         return out
     }
