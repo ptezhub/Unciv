@@ -24,14 +24,17 @@ done
 mkdir -p "$OUT"
 CP="$CORE:$GAME"
 
+JAVA_SRC=$(find "$ROOT/agent/src-java" -name '*.java' 2>/dev/null || true)
 KT_SRC=$(find "$ROOT/agent/src-kotlin" -name '*.kt' 2>/dev/null || true)
+
+# kotlinc 也读 .java（只解析不编译），这样 Kotlin 能引用还没搬完的 Java 类，
+# Java 也能引用已经搬过去的 Kotlin 类，搬迁顺序不受限制。
 if [ -n "$KT_SRC" ]; then
-  echo "kotlinc: $(echo "$KT_SRC" | wc -l) 个文件"
+  echo "kotlinc: $(echo "$KT_SRC" | wc -l) 个 kt + $(echo "$JAVA_SRC" | wc -l) 个 java(仅解析)"
   "$JDK/bin/java" -cp "$KC:$STD:$SCR:$COR:$ANN" org.jetbrains.kotlin.cli.jvm.K2JVMCompiler \
-    -classpath "$CP:$STD" -d "$OUT" -no-reflect -nowarn $KT_SRC
+    -classpath "$CP:$STD" -d "$OUT" -no-reflect -nowarn $KT_SRC $JAVA_SRC 2>&1 | grep -v '^warning: unable to find' || true
 fi
 
-JAVA_SRC=$(find "$ROOT/agent/src-java" -name '*.java' 2>/dev/null || true)
 if [ -n "$JAVA_SRC" ]; then
   echo "javac: $(echo "$JAVA_SRC" | wc -l) 个文件"
   "$JDK/bin/javac" -nowarn -d "$OUT" -cp "$CP:$OUT" $JAVA_SRC
