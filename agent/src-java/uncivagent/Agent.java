@@ -314,6 +314,11 @@ public class Agent {
             if (path.equals("/religion")) { send(ex, 200, religionJson(need(), actor)); return; }
             if (path.equals("/techs")) { send(ex, 200, techsJson(need(), actor)); return; }
             if (path.equals("/briefing")) { send(ex, 200, briefingJson(need(), actor)); return; }
+            if (path.equals("/preview_attack")) {
+                send(ex, 200, previewAttackJson(need(), actor, query(ex, "unit"), query(ex, "city"),
+                        intq(ex, "x"), intq(ex, "y")));
+                return;
+            }
             if (path.equals("/victory")) { send(ex, 200, victoryJson(need(), actor)); return; }
             if (path.equals("/citystates")) { send(ex, 200, cityStatesJson(need(), actor)); return; }
             if (path.equals("/spies")) { send(ex, 200, spiesJson(need(), actor)); return; }
@@ -424,6 +429,7 @@ public class Agent {
                 || path.equals("/diplomacy") || path.equals("/policies") || path.equals("/trade")
                 || path.equals("/religion") || path.equals("/citystates") || path.equals("/spies")
                 || path.equals("/techs") || path.equals("/victory") || path.equals("/briefing")
+                || path.equals("/preview_attack")
                 || path.equals("/tile")
                 || path.startsWith("/city/") || path.equals("/actions")
                 || path.equals("/act") || path.equals("/move") || path.equals("/endturn");
@@ -1418,6 +1424,91 @@ public class Agent {
             sb.append(",\"text\":").append(quote(body.toString())).append('}');
         }
         return sb.append("]}").toString();
+    }
+
+    /**
+     * 攻击预览：不执行动作，只算伤害范围。客户端点目标时会显示这个，agent 之前只能打了才知道。
+     */
+    static String previewAttackJson(GameInfo gi, Civilization c, String unitRef, String cityRef, Integer x, Integer y) {
+        if (x == null || y == null) return "{\"error\":{\"code\":\"BAD_PARAMS\",\"message\":\"需要 x 与 y\"}}";
+        Tile target = Kernel.tileAt(gi, x, y);
+        if (target == null) return "{\"error\":{\"code\":\"UNKNOWN_ID\",\"message\":" + quote("没有这个格子") + "}}";
+
+        com.unciv.logic.battle.ICombatant defender = null;
+        String targetType = "none";
+        try {
+            if (target.isCityCenter() && target.getCity() != null) {
+                defender = new com.unciv.logic.battle.CityCombatant(target.getCity());
+                targetType = "city";
+            } else {
+                Iterator<MapUnit> it = target.getUnits().iterator();
+                while (it.hasNext()) {
+                    MapUnit mu = it.next();
+                    if (mu.getCiv() != c) { defender = new com.unciv.logic.battle.MapUnitCombatant(mu); targetType = "unit"; break; }
+                }
+            }
+        } catch (Throwable ignored) { }
+        if (defender == null)
+            return "{\"error\":{\"code\":\"ILLEGAL_TARGET\",\"message\":" + quote("这个格子上没有可打的敌人") + "}}";
+
+        com.unciv.logic.battle.ICombatant attacker = null;
+        Tile fromTile = null;
+        int range = 1;
+        if (unitRef != null) {
+            Integer id = Kernel.idOf(unitRef, "unit");
+            MapUnit u = null;
+            if (id != null) {
+                Iterator<MapUnit> it = c.getUnits().getCivUnits().iterator();
+                while (it.hasNext()) { MapUnit m = it.next(); if (m.getId() == id) u = m; }
+            }
+            if (u == null) return "{\"error\":{\"code\":\"NOT_YOUR_UNIT\",\"message\":" + quote("没有这个单位") + "}}";
+            attacker = new com.unciv.logic.battle.MapUnitCombatant(u);
+            fromTile = u.getTile();
+            range = u.getRange();
+        } else if (cityRef != null) {
+            City city = null;
+            for (City cc : c.getCities())
+                if (("city-" + cc.getId()).equals(cityRef) || cc.getId().equals(cityRef) || cc.getName().equals(cityRef)) city = cc;
+            if (city == null) return "{\"error\":{\"code\":\"NOT_YOUR_CITY\",\"message\":" + quote("没有这个城市") + "}}";
+            if (!city.canBombard())
+                return "{\"error\":{\"code\":\"NOT_AVAILABLE\",\"message\":" + quote(city.getName() + " 现在不能开火") + "}}";
+            attacker = new com.unciv.logic.battle.CityCombatant(city);
+            fromTile = city.getCenterTile();
+            range = city.getBombardRange();
+        } else {
+            return "{\"error\":{\"code\":\"BAD_PARAMS\",\"message\":" + quote("需要 unit 或 city") + "}}";
+        }
+
+        int distance = fromTile.aerialDistanceTo(target);
+        com.unciv.logic.battle.BattleDamage bd = com.unciv.logic.battle.BattleDamage.INSTANCE;
+        int defMin, defMax, atkMin, atkMax, defStrength, atkStrength;
+        try {
+            defMin = bd.calculateDamageToDefender(attacker, defender, fromTile, 0f);
+            defMax = bd.calculateDamageToDefender(attacker, defender, fromTile, 1f);
+            atkMin = bd.calculateDamageToAttacker(attacker, defender, fromTile, 0f);
+            atkMax = bd.calculateDamageToAttacker(attacker, defender, fromTile, 1f);
+            atkStrength = (int) bd.getAttackingStrength(attacker, defender, fromTile);
+            defStrength = (int) bd.getDefendingStrength(attacker, defender, fromTile);
+        } catch (Throwable e) {
+            return "{\"error\":{\"code\":\"NOT_AVAILABLE\",\"message\":" + quote("算不出伤害: " + e.getMessage()) + "}}";
+        }
+        int defenderHp = defender.getHealth();
+        int attackerHp = attacker.getHealth();
+        boolean inRange = distance <= range;
+
+        return "{\"target\":[" + x + "," + y + "]"
+                + ",\"targetType\":" + quote(targetType)
+                + ",\"distance\":" + distance
+                + ",\"range\":" + range
+                + ",\"inRange\":" + inRange
+                + ",\"attackerStrength\":" + atkStrength
+                + ",\"defenderStrength\":" + defStrength
+                + ",\"damageToDefender\":{\"min\":" + defMin + ",\"max\":" + defMax + "}"
+                + ",\"damageToAttacker\":{\"min\":" + atkMin + ",\"max\":" + atkMax + "}"
+                + ",\"defenderHp\":" + defenderHp
+                + ",\"attackerHp\":" + attackerHp
+                + ",\"wouldKillDefender\":" + (defMax >= defenderHp)
+                + ",\"wouldKillAttacker\":" + (atkMax >= attackerHp) + "}";
     }
 
     static String techsJson(GameInfo gi, Civilization c) {

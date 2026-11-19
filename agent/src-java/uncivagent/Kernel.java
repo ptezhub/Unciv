@@ -127,6 +127,8 @@ public final class Kernel {
                 "{\"type\":\"object\",\"properties\":{\"civ\":{\"type\":\"string\"},\"give\":{\"type\":\"array\"},\"want\":{\"type\":\"array\"}},\"required\":[\"civ\"]}", "act");
         tool("respond_trade", "回应某个文明发来的交易请求：accept 为 true 成交，false 拒绝。",
                 "{\"type\":\"object\",\"properties\":{\"civ\":{\"type\":\"string\"},\"accept\":{\"type\":\"boolean\"},\"index\":{\"type\":\"integer\"}},\"required\":[\"civ\"]}", "act");
+        tool("preview_attack", "不执行动作，只算这一击的伤害范围：双方力量、期望伤害、会不会死、够不够得着。",
+                "{\"type\":\"object\",\"properties\":{\"unit\":{\"type\":\"string\"},\"city\":{\"type\":\"string\"},\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"}},\"required\":[\"x\",\"y\"]}", "read");
         tool("get_guide", "游戏自带的教程/百科条目，可当攻略参考；可按 name 或 category 过滤。",
                 "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"},\"category\":{\"type\":\"string\"}}}", "read");
         tool("get_briefing", "一回合的完整简报：资源、研究、城市、待操作单位、外交、宗教、事件、提醒。每回合读这一条就够。",
@@ -1480,7 +1482,7 @@ public final class Kernel {
         throw new Fail("NOT_YOUR_CITY", "你没有 id 为 " + id + " 的城市", mine);
     }
 
-    private static Integer idOf(String target, String prefix) {
+    static Integer idOf(String target, String prefix) {
         if (target == null || !target.startsWith(prefix + "-")) return null;
         try {
             return Integer.parseInt(target.substring(prefix.length() + 1));
@@ -1595,6 +1597,9 @@ public final class Kernel {
             case "get_events": return Agent.eventsJson(gameInfo, actor, Json.integer(args, "limit"));
             case "get_trade_offers": return Agent.tradeOffersJson(gameInfo, actor, Json.str(args, "civ"));
             case "get_guide": return Agent.guideJson(Json.str(args, "name"), Json.str(args, "category"));
+            case "preview_attack": return Agent.previewAttackJson(gameInfo, actor,
+                    Json.str(args, "unit"), Json.str(args, "city"),
+                    Json.integer(args, "x"), Json.integer(args, "y"));
             case "get_briefing": return Agent.briefingJson(gameInfo, actor);
             case "get_techs": return Agent.techsJson(gameInfo, actor);
             case "get_religion": return Agent.religionJson(gameInfo, actor);

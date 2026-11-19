@@ -236,6 +236,7 @@ def run_all(h):
     check("J", "J2 mcp act matches http", "P1", lambda: mcp_act_parity(h))
     check("J", "J3 briefing complete", "P0", lambda: briefing_shape(h))
     check("J", "J4 guide available", "P1", lambda: guide_shape(h))
+    check("J", "J5 attack preview is read-only", "P0", lambda: preview_readonly(h))
 
     print("\nI failure cost")
     check("I", "I1 failed action is free", "P0", lambda: failed_action_free(h))
@@ -608,6 +609,30 @@ def mcp_arrays(h):
     out = mcp_call(h, "choose_beliefs", {"beliefs": ["No Such Belief"]})
     assert out["error"]["code"] in ("UNKNOWN_ID", "NOT_AVAILABLE"), out
     return True, "arrays and objects reach the kernel intact"
+
+
+def preview_readonly(h):
+    h.new_game(seed=8181)
+    cid = h.ensure_city()
+    _, units = h.get("/units")
+    mil = next((u for u in units["units"] if u["military"]), None)
+    if mil is None:
+        return True, "no military unit, skipped"
+    _, before = h.get("/state")
+    _, b = h.get("/preview_attack?unit=" + mil["id"] + "&x=" + str(mil["x"] + 1) + "&y=" + str(mil["y"]))
+    # 没敌人就是错误体，有敌人就是预览体，两种都不能改状态
+    if "error" in b:
+        assert b["error"]["code"] in ("ILLEGAL_TARGET", "UNKNOWN_ID", "BAD_PARAMS"), b
+    else:
+        for f in ("target", "targetType", "distance", "range", "inRange",
+                  "damageToDefender", "damageToAttacker"):
+            assert f in b, f"preview missing {f}"
+    _, after = h.get("/state")
+    _, units2 = h.get("/units")
+    now = next(u for u in units2["units"] if u["id"] == mil["id"])
+    assert after["turn"] == before["turn"], "preview advanced the turn"
+    assert now["moves"] == mil["moves"], "preview spent movement"
+    return True, "preview changes nothing"
 
 
 def guide_shape(h):
