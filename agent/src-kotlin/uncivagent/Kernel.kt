@@ -107,6 +107,8 @@ object Kernel {
             """{"type":"object","properties":{"improvement":{"type":"string"}},"required":["improvement"]}""", "act"),
         Tool("disband_unit", "解散自己的单位。",
             """{"type":"object","properties":{}}""", "act"),
+        Tool("preview_city_site", "建城预览：这格能不能建、为什么不能、离最近的城市几格。只读。",
+            """{"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"}},"required":["x","y"]}""", "read"),
         Tool("preview_move", "移动预览：这条路线怎么走、每格代价、几回合到、到不了为什么。不改状态。",
             """{"type":"object","properties":{"unit":{"type":"string"},"x":{"type":"integer"},"y":{"type":"integer"}},"required":["unit","x","y"]}""", "read"),
         Tool("get_stats", "帝国总览的 Stats 页：金币/科研/文化/信仰按来源拆开，加快乐拆解和逐城产出。",
@@ -1739,6 +1741,8 @@ object Kernel {
             "get_trade_offers" -> return Agent.tradeOffersJson(gameInfo, actor, str(args, "civ"))
             "get_guide" -> return Agent.guideJson(str(args, "name"), str(args, "category"))
             "get_targets" -> return Agent.targetsJson(gameInfo, actor, str(args, "unit"))
+            "preview_city_site" -> return Agent.previewCitySiteJson(gameInfo, actor,
+                integer(args, "x"), integer(args, "y"))
             "preview_move" -> return Agent.previewMoveJson(gameInfo, actor, str(args, "unit"),
                 integer(args, "x"), integer(args, "y"))
             "get_reachable" -> return Agent.reachableJson(gameInfo, actor, str(args, "unit"))

@@ -394,6 +394,10 @@ object Agent {
                 return
             }
 
+            if (path == "/preview_city_site" && method == "GET") {
+                send(ex, 200, previewCitySiteJson(need(), actor!!, intq(ex, "x"), intq(ex, "y")))
+                return
+            }
             if (path == "/actions" && method == "GET") {
                 // 和 /intent 的 target 一样接受 "unit-17" 或 "17"，文档一直写的是 unit=<id>
                 val u = intq(ex, "unit") ?: query(ex, "unit")?.removePrefix("unit-")?.toIntOrNull()
@@ -496,7 +500,7 @@ object Agent {
             path == "/preview_move" || path == "/reachable" ||
             path == "/stats" || path == "/resources" ||
             path == "/tile" ||
-            path.startsWith("/city/") || path == "/actions" ||
+            path.startsWith("/city/") || path == "/actions" || path == "/preview_city_site" ||
             path == "/act" || path == "/move" || path == "/endturn"
     }
 
@@ -1803,6 +1807,53 @@ object Agent {
         } catch (ignored: Throwable) { }
         sb.append("]}")
         return sb.toString()
+    }
+
+    /** 建城预览：这一格能不能建、为什么不能、离最近的城市几格。只读。
+     *  移民走到地方才发现不能建，代价是好几回合，和移动预览是同一类问题。 */
+    fun previewCitySiteJson(gi: GameInfo, c: Civilization, x: Int?, y: Int?): String {
+        if (x == null || y == null) return """{"error":{"code":"BAD_PARAMS","message":"需要 x 与 y"}}"""
+        val t = Kernel.tileAt(gi, x, y)
+            ?: return """{"error":{"code":"ILLEGAL_TARGET","message":${quote("地图外: $x,$y")}}}"""
+        val minDist = gi.ruleset.modOptions.constants.minimalCityDistance
+        val minDistOther = gi.ruleset.modOptions.constants.minimalCityDistanceOnDifferentContinents
+
+        var canSettle = false
+        try { canSettle = t.canBeSettled(c) } catch (ignored: Throwable) { }
+
+        var reason: String? = null
+        var nearestCity: String? = null
+        var nearestOwner: String? = null
+        var nearestDist = -1
+        if (t.isWater) reason = "水面"
+        else if (t.isImpassible()) reason = "不可通行地形"
+        else {
+            for (cv in gi.civilizations) {
+                for (city in cv.cities) {
+                    val d = t.aerialDistanceTo(city.getCenterTile())
+                    if (nearestDist < 0 || d < nearestDist) {
+                        nearestDist = d; nearestCity = city.name; nearestOwner = cv.civName
+                    }
+                }
+            }
+            val limit = if (nearestDist >= 0 && nearestDist <= minDistOther) minDistOther else minDist
+            if (nearestDist in 0..limit)
+                reason = "离" + (if (nearestOwner == c.civName) "自己的城 " else "$nearestOwner 的城 ") +
+                    "$nearestCity 只有 $nearestDist 格，至少要 ${limit + 1} 格"
+            else if (t.owningCity != null && t.owningCity!!.civ !== c)
+                reason = "这里是 ${t.owningCity!!.civ.civName} 的领土"
+            else if (!canSettle) reason = "地形不允许建城"
+        }
+
+        return """{"at":[$x,$y]""" +
+            ""","canSettle":$canSettle""" +
+            ""","reason":${reason?.let { quote(it) } ?: "null"}""" +
+            ""","terrain":${quote(t.baseTerrain)}""" +
+            ""","nearestCity":${nearestCity?.let { quote(it) } ?: "null"}""" +
+            ""","nearestOwner":${nearestOwner?.let { quote(it) } ?: "null"}""" +
+            ""","nearestDistance":${if (nearestDist < 0) "null" else nearestDist}""" +
+            ""","minDistance":${minDist + 1}""" +
+            ""","resource":${t.resource?.let { quote(it) } ?: "null"}}"""
     }
 
     /** 移动预览：一条路线、每格代价、几回合到、到不了为什么。只读，不消耗移动力。 */

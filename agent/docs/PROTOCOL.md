@@ -41,6 +41,7 @@ Contents:
 | GET | `/preview_attack` | `?unit&city&x&y` | damage estimate, no state change |
 | GET | `/targets` | `?unit` | attackable tiles with damage ranges |
 | GET | `/preview_move` | `?unit&x&y` | route, per-tile cost, turns, blockers; no state change |
+| GET | `/preview_city_site` | `?x&y` | can a city go here, and why not |
 | GET | `/reachable` | `?unit` | every tile reachable this turn with its cost |
 | GET | `/stats` | — | per-cause gold/science/culture/faith, happiness, per-city yields |
 | GET | `/resources` | — | luxuries connected or not, strategic stock |
@@ -197,7 +198,7 @@ candidates are there to be retried.
 
 ## Tool table
 
-52 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
+53 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
 drift from the code.
 
 Read (`kind: read`) — these are not intents; call the HTTP route or the MCP tool:
@@ -221,6 +222,7 @@ Read (`kind: read`) — these are not intents; call the HTTP route or the MCP to
 | `preview_attack` | `unit` or `city`, `x`, `y` | `GET /preview_attack` |
 | `get_targets` | `unit` | `GET /targets` |
 | `preview_move` | `unit`, `x`, `y` | `GET /preview_move` |
+| `preview_city_site` | `x`, `y` | `GET /preview_city_site` |
 | `get_reachable` | `unit` | `GET /reachable` |
 | `get_stats` | — | `GET /stats` |
 | `get_resources` | — | `GET /resources` |
@@ -279,7 +281,7 @@ Names are exact. `UNKNOWN_ID` returns up to 8 substring matches, so `Monu` sugge
 | `initialize` | `protocolVersion: "2025-06-18"`, `capabilities.tools`, `serverInfo: {name:"unciv-agent",version:"0.1.0"}` |
 | `notifications/initialized` | HTTP `202`, empty body |
 | `ping` | `{}` |
-| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 52 entries |
+| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 53 entries |
 | `tools/call` | `{content:[{type:"text",text:"<tool JSON as a string>"}],isError:bool}` |
 | anything else | `-32601 Method not found` |
 
@@ -454,6 +456,12 @@ missing line means zero, not unknown.
 that no improvement has connected yet. `needs` is the improvement that would connect it and
 `canBuildNow` says whether a worker could start it today, so a resource that stays dark is a
 visible problem (missing tech) rather than a mystery.
+
+`GET /preview_city_site?x=&y=` — `{"at","canSettle","reason","terrain","nearestCity","nearestOwner",
+"nearestDistance","minDistance","resource"}`. `minDistance` is the smallest legal gap (the
+ruleset's `minimalCityDistance` plus one), and `reason` names whichever city is actually blocking
+you — yours or theirs. A settler that walks to a spot and only then learns it cannot settle has
+paid several turns for nothing; ask first.
 
 `GET /reachable?unit=` — every tile the unit can reach this turn, sorted by cost:
 `{"from":[x,y],"moves":2.0,"tiles":[{x,y,cost,terrain,city?,improvement?}],"count":N}`. This is the
