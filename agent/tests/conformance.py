@@ -238,6 +238,7 @@ def run_all(h):
     check("J", "J4 guide available", "P1", lambda: guide_shape(h))
     check("J", "J5 attack preview is read-only", "P0", lambda: preview_readonly(h))
     check("J", "J6 worker tools refuse cleanly", "P1", lambda: worker_tools(h))
+    check("J", "J7 move preview is read-only", "P0", lambda: move_preview(h))
 
     print("\nI failure cost")
     check("I", "I1 failed action is free", "P0", lambda: failed_action_free(h))
@@ -634,6 +635,53 @@ def preview_readonly(h):
     assert after["turn"] == before["turn"], "preview advanced the turn"
     assert now["moves"] == mil["moves"], "preview spent movement"
     return True, "preview changes nothing"
+
+
+def move_preview(h):
+    """移动预览必须只读，而且路线要和真走一致。"""
+    h.new_game(seed=7373)
+    h.ensure_city()
+    _, units = h.get("/units")
+    u = next((x for x in units["units"] if x["moves"] > 0), None)
+    assert u, "no unit with movement"
+    _, st0 = h.get("/state")
+
+    # 找一格这回合到不了的，检验多回合估算
+    _, reach = h.get("/reachable?unit=" + u["id"])
+    assert "tiles" in reach, reach
+    reachable = {(t["x"], t["y"]) for t in reach["tiles"]}
+    for t in reach["tiles"]:
+        assert t["cost"] <= u["moves"] + 0.001, t
+
+    _, m = h.get("/map?cx=%d&cy=%d&radius=2" % (u["x"], u["y"]))
+    target = next((t for t in m["tiles"]
+                   if (t["x"], t["y"]) not in reachable
+                   and not t.get("isCityCenter")), None)
+    if target is None:
+        return True, "no out-of-reach tile nearby, skipped"
+
+    _, p = h.get("/preview_move?unit=%s&x=%d&y=%d" % (u["id"], target["x"], target["y"]))
+    for f in ("from", "to", "distance", "reachableThisTurn", "turnsToReach", "path", "blocked"):
+        assert f in p, f"preview_move missing {f}"
+    assert p["reachableThisTurn"] is False, p
+    assert p["turnsToReach"] is None or p["turnsToReach"] >= 2, p
+
+    _, st1 = h.get("/state")
+    _, u2 = h.get("/units")
+    now = next(x for x in u2["units"] if x["id"] == u["id"])
+    assert st1["turn"] == st0["turn"], "preview_move advanced the turn"
+    assert now["moves"] == u["moves"], "preview_move spent movement"
+
+    # 真走一步：落点应该是预览路径的第一格
+    if not p["path"]:
+        return True, "no path returned, skipped"
+    first = p["path"][0]
+    _, r = h.intent("move_unit", u["id"], {"x": first["x"], "y": first["y"]})
+    assert r.get("ok"), r
+    _, u3 = h.get("/units")
+    after = next(x for x in u3["units"] if x["id"] == u["id"])
+    assert (after["x"], after["y"]) == (first["x"], first["y"]), (after, first)
+    return True, "read-only, first step matches the preview"
 
 
 def worker_tools(h):

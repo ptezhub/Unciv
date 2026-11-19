@@ -314,6 +314,15 @@ public class Agent {
             if (path.equals("/religion")) { send(ex, 200, religionJson(need(), actor)); return; }
             if (path.equals("/techs")) { send(ex, 200, techsJson(need(), actor)); return; }
             if (path.equals("/briefing")) { send(ex, 200, briefingJson(need(), actor)); return; }
+            if (path.equals("/preview_move")) {
+                send(ex, 200, previewMoveJson(need(), actor, query(ex, "unit"),
+                        intq(ex, "x"), intq(ex, "y")));
+                return;
+            }
+            if (path.equals("/reachable")) {
+                send(ex, 200, reachableJson(need(), actor, query(ex, "unit")));
+                return;
+            }
             if (path.equals("/targets")) {
                 send(ex, 200, targetsJson(need(), actor, query(ex, "unit")));
                 return;
@@ -434,6 +443,7 @@ public class Agent {
                 || path.equals("/religion") || path.equals("/citystates") || path.equals("/spies")
                 || path.equals("/techs") || path.equals("/victory") || path.equals("/briefing")
                 || path.equals("/preview_attack") || path.equals("/targets")
+                || path.equals("/preview_move") || path.equals("/reachable")
                 || path.equals("/tile")
                 || path.startsWith("/city/") || path.equals("/actions")
                 || path.equals("/act") || path.equals("/move") || path.equals("/endturn");
@@ -1567,6 +1577,244 @@ public class Agent {
                 + ",\"attackerHp\":" + attackerHp
                 + ",\"wouldKillDefender\":" + (defMax >= defenderHp)
                 + ",\"wouldKillAttacker\":" + (atkMax >= attackerHp) + "}";
+    }
+
+    /** 移动预览：一条路线、每格代价、几回合到、到不了为什么。只读，不消耗移动力。 */
+    static String previewMoveJson(GameInfo gi, Civilization c, String unitRef, Integer x, Integer y) {
+        Integer id = Kernel.idOf(unitRef, "unit");
+        MapUnit unit = null;
+        if (id != null) {
+            Iterator<MapUnit> it = c.getUnits().getCivUnits().iterator();
+            while (it.hasNext()) { MapUnit m = it.next(); if (m.getId() == id) unit = m; }
+        }
+        if (unit == null)
+            return "{\"error\":{\"code\":\"NOT_YOUR_UNIT\",\"message\":" + quote("没有这个单位") + "}}";
+        if (x == null || y == null)
+            return "{\"error\":{\"code\":\"BAD_PARAMS\",\"message\":" + quote("需要 x 与 y") + "}}";
+        Tile dest = Kernel.tileAt(gi, x, y);
+        if (dest == null)
+            return "{\"error\":{\"code\":\"ILLEGAL_TARGET\",\"message\":" + quote("地图外: " + x + "," + y) + "}}";
+
+        Tile from = unit.getTile();
+        HexCoord fp = from.getPosition();
+        StringBuilder sb = new StringBuilder("{\"unit\":").append(quote("unit-" + unit.getId()))
+                .append(",\"name\":").append(quote(unit.getName()))
+                .append(",\"from\":[").append(fp.getX()).append(',').append(fp.getY()).append(']')
+                .append(",\"to\":[").append(x).append(',').append(y).append(']')
+                .append(",\"distance\":").append(from.aerialDistanceTo(dest))
+                .append(",\"moves\":").append(unit.getCurrentMovement())
+                .append(",\"maxMoves\":").append(unit.getMaxMovement(false));
+
+        String reason = null;
+        try {
+            Object r = unit.getMovement().getCannotMoveToReason(dest, false, true, false, null);
+            if (r != null) reason = r.toString();
+        } catch (Throwable ignored) { }
+
+        // 这回合能不能到
+        com.unciv.logic.map.mapunit.movement.PathsToTilesWithinTurn paths = null;
+        try { paths = unit.getMovement().getDistanceToTiles(false, null, null, false); }
+        catch (Throwable ignored) { }
+
+        if (paths != null && paths.containsKey(dest)) {
+            sb.append(",\"reachableThisTurn\":true,\"turnsToReach\":1");
+            float total = 0f;
+            try { total = paths.get(dest).getTotalMovement(); } catch (Throwable ignored) { }
+            sb.append(",\"totalMovement\":").append(round2(total))
+              .append(",\"movesLeftAfter\":").append(round2(Math.max(0f, unit.getCurrentMovement() - total)));
+            sb.append(",\"path\":");
+            appendPath(sb, unit, paths, dest);
+        } else {
+            sb.append(",\"reachableThisTurn\":false");
+            // 多回合：按代价做 Dijkstra，再按每回合移动力模拟
+            List<Tile> route = null;
+            float cost = 0f;
+            try {
+                Object[] res = planRoute(unit, from, dest);
+                if (res != null) { route = (List<Tile>) res[0]; cost = (Float) res[1]; }
+            } catch (Throwable ignored) { }
+            if (route == null) {
+                sb.append(",\"turnsToReach\":null,\"path\":[]");
+            } else {
+                int[] sim = simulateTurns(unit, route);
+                sb.append(",\"turnsToReach\":").append(sim[0])
+                  .append(",\"totalMovement\":").append(round2(cost))
+                  .append(",\"movesLeftAfter\":").append(round2(sim[1] / 100f))
+                  .append(",\"path\":");
+                StringBuilder pj = new StringBuilder("[");
+                for (int i = 0; i < route.size(); i++) {
+                    Tile t = route.get(i);
+                    if (i > 0) pj.append(',');
+                    pj.append("{\"x\":").append(t.getPosition().getX())
+                      .append(",\"y\":").append(t.getPosition().getY())
+                      .append(",\"terrain\":").append(quote(t.getLastTerrain() == null ? "" : t.getLastTerrain().getName()))
+                      .append('}');
+                }
+                pj.append(']');
+                sb.append(pj);
+            }
+        }
+
+        // 目标格本身的信息
+        sb.append(",\"destination\":{\"terrain\":")
+          .append(quote(dest.getLastTerrain() == null ? "" : dest.getLastTerrain().getName()))
+          .append(",\"improvement\":").append(dest.getImprovement() == null ? "null" : quote(dest.getImprovement()))
+          .append(",\"city\":").append(dest.isCityCenter() && dest.getCity() != null
+                  ? quote(dest.getCity().getName()) : "null")
+          .append('}');
+        sb.append(",\"blocked\":").append(reason == null ? "null" : quote(reason));
+        sb.append(",\"blockedHint\":").append(reason == null ? "null" : quote(moveReasonHint(reason)));
+        return sb.append('}').toString();
+    }
+
+    private static void appendPath(StringBuilder sb, MapUnit unit,
+                                   com.unciv.logic.map.mapunit.movement.PathsToTilesWithinTurn paths, Tile dest) {
+        List<Tile> route;
+        try { route = paths.getPathToTile(dest); }
+        catch (Throwable e) { sb.append("[]"); return; }
+        sb.append('[');
+        Tile prev = unit.getTile();
+        boolean first = true;
+        for (Tile t : route) {
+            if (!first) sb.append(',');
+            first = false;
+            float step = 0f;
+            try {
+                step = com.unciv.logic.map.mapunit.movement.MovementCost.INSTANCE
+                        .getMovementCostBetweenAdjacentTiles(unit, prev, t, false);
+            } catch (Throwable ignored) { }
+            sb.append("{\"x\":").append(t.getPosition().getX())
+              .append(",\"y\":").append(t.getPosition().getY())
+              .append(",\"terrain\":").append(quote(t.getLastTerrain() == null ? "" : t.getLastTerrain().getName()))
+              .append(",\"cost\":").append(round2(step))
+              .append('}');
+            prev = t;
+        }
+        sb.append(']');
+    }
+
+    /** 按步进代价做 Dijkstra，只走 canPassThrough 的格子；返回 {List<Tile> 路线, Float 总代价} 或 null。 */
+    private static Object[] planRoute(MapUnit unit, Tile from, Tile dest) {
+        int cap = 1500;
+        java.util.HashMap<Tile, Float> dist = new java.util.HashMap<>();
+        java.util.HashMap<Tile, Tile> prev = new java.util.HashMap<>();
+        java.util.PriorityQueue<Object[]> pq = new java.util.PriorityQueue<>(16,
+                (a, b) -> Float.compare((Float) a[0], (Float) b[0]));
+        dist.put(from, 0f);
+        pq.add(new Object[]{0f, from});
+        int visited = 0;
+        while (!pq.isEmpty() && visited++ < cap) {
+            Object[] cur = pq.poll();
+            float d = (Float) cur[0];
+            Tile t = (Tile) cur[1];
+            if (d > dist.getOrDefault(t, Float.MAX_VALUE)) continue;
+            if (t == dest) break;
+            Iterator<Tile> nit = t.getNeighbors().iterator();
+            while (nit.hasNext()) {
+                Tile n = nit.next();
+                boolean pass = false;
+                try { pass = unit.getMovement().canPassThrough(n, false); } catch (Throwable ignored) { }
+                if (!pass && n != dest) continue;
+                float step;
+                try {
+                    step = com.unciv.logic.map.mapunit.movement.MovementCost.INSTANCE
+                            .getMovementCostBetweenAdjacentTiles(unit, t, n, false);
+                } catch (Throwable e) { continue; }
+                if (step >= 100f) continue;
+                float nd = d + step;
+                if (nd < dist.getOrDefault(n, Float.MAX_VALUE)) {
+                    dist.put(n, nd);
+                    prev.put(n, t);
+                    pq.add(new Object[]{nd, n});
+                }
+            }
+        }
+        if (!dist.containsKey(dest)) return null;
+        List<Tile> route = new ArrayList<>();
+        Tile cur = dest;
+        while (cur != from) {
+            route.add(0, cur);
+            cur = prev.get(cur);
+            if (cur == null) return null;
+        }
+        return new Object[]{route, dist.get(dest)};
+    }
+
+    /** 按每回合重置移动力模拟走这条路线；返回 {回合数, 最后剩余移动力×100}。 */
+    private static int[] simulateTurns(MapUnit unit, List<Tile> route) {
+        int max = Math.max(1, unit.getMaxMovement(false));
+        float moves = unit.getCurrentMovement();
+        int turns = 1;
+        Tile prev = unit.getTile();
+        for (Tile t : route) {
+            float step;
+            try {
+                step = com.unciv.logic.map.mapunit.movement.MovementCost.INSTANCE
+                        .getMovementCostBetweenAdjacentTiles(unit, prev, t, false);
+            } catch (Throwable e) { step = 1f; }
+            if (moves <= 0.05f) { turns++; moves = max; }
+            moves = Math.max(0f, moves - step);
+            prev = t;
+        }
+        return new int[]{turns, Math.round(moves * 100)};
+    }
+
+    private static String moveReasonHint(String reason) {
+        switch (reason) {
+            case "TerrainImpassable": return "地形不可通行";
+            case "BoatCannotGoOnLand": return "船不能上岸";
+            case "CannotEmbark": return "这个单位不能上船/下水";
+            case "CannotEnterOcean": return "还不能进远洋，需要相关科技";
+            case "CannotEnterForeignLand": return "不能进入别国领土（没开边）";
+            case "CannotEnterCityCenter": return "不能进入别人城市中心";
+            case "TileIsNotEmpty": return "目标格已经有单位";
+            case "NoAirUnitTransport": return "没有可用的空中运输";
+            default: return reason;
+        }
+    }
+
+    /** 这回合能走到的所有格子，带剩余移动力；客户端移动覆盖层的等价物。 */
+    static String reachableJson(GameInfo gi, Civilization c, String unitRef) {
+        Integer id = Kernel.idOf(unitRef, "unit");
+        MapUnit unit = null;
+        if (id != null) {
+            Iterator<MapUnit> it = c.getUnits().getCivUnits().iterator();
+            while (it.hasNext()) { MapUnit m = it.next(); if (m.getId() == id) unit = m; }
+        }
+        if (unit == null)
+            return "{\"error\":{\"code\":\"NOT_YOUR_UNIT\",\"message\":" + quote("没有这个单位") + "}}";
+        HexCoord p = unit.getTile().getPosition();
+        StringBuilder sb = new StringBuilder("{\"unit\":").append(quote("unit-" + unit.getId()))
+                .append(",\"name\":").append(quote(unit.getName()))
+                .append(",\"from\":[").append(p.getX()).append(',').append(p.getY()).append(']')
+                .append(",\"moves\":").append(unit.getCurrentMovement())
+                .append(",\"tiles\":[");
+        int n = 0;
+        try {
+            com.unciv.logic.map.mapunit.movement.PathsToTilesWithinTurn paths =
+                    unit.getMovement().getDistanceToTiles(false, null, null, false);
+            List<Tile> keys = new ArrayList<>(paths.keySet());
+            keys.sort((a, b) -> Float.compare(paths.get(a).getTotalMovement(), paths.get(b).getTotalMovement()));
+            for (Tile t : keys) {
+                if (t == unit.getTile()) continue;
+                if (n > 0) sb.append(',');
+                n++;
+                sb.append("{\"x\":").append(t.getPosition().getX())
+                  .append(",\"y\":").append(t.getPosition().getY())
+                  .append(",\"cost\":").append(round2(paths.get(t).getTotalMovement()))
+                  .append(",\"terrain\":").append(quote(t.getLastTerrain() == null ? "" : t.getLastTerrain().getName()));
+                if (t.isCityCenter() && t.getCity() != null)
+                    sb.append(",\"city\":").append(quote(t.getCity().getName()));
+                if (t.getImprovement() != null)
+                    sb.append(",\"improvement\":").append(quote(t.getImprovement()));
+                sb.append('}');
+            }
+        } catch (Throwable ignored) { }
+        return sb.append("],\"count\":").append(n).append('}').toString();
+    }
+
+    private static String round2(float f) {
+        return String.valueOf(Math.round(f * 100f) / 100f);
     }
 
     /** 某个单位这回合能打的所有目标，附伤害区间；省得模型自己算六边形几何 */

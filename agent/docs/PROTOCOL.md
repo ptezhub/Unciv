@@ -40,6 +40,8 @@ Contents:
 | GET | `/guide` | `?name&category` | `{"entries":[{name,category,steps,text}]}` |
 | GET | `/preview_attack` | `?unit&city&x&y` | damage estimate, no state change |
 | GET | `/targets` | `?unit` | attackable tiles with damage ranges |
+| GET | `/preview_move` | `?unit&x&y` | route, per-tile cost, turns, blockers; no state change |
+| GET | `/reachable` | `?unit` | every tile reachable this turn with its cost |
 | GET | `/isalive` | — | `{"online":true}` |
 | any | `/auth` | `Authorization: Basic` | `{"ok":true,"user":"<user>"}` |
 | GET | `/files/{name}` | — | raw bytes, `text/plain` |
@@ -193,7 +195,7 @@ candidates are there to be retried.
 
 ## Tool table
 
-48 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
+50 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
 drift from the code.
 
 Read (`kind: read`) — these are not intents; call the HTTP route or the MCP tool:
@@ -216,6 +218,8 @@ Read (`kind: read`) — these are not intents; call the HTTP route or the MCP to
 | `get_guide` | `name?`, `category?` | `GET /guide` |
 | `preview_attack` | `unit` or `city`, `x`, `y` | `GET /preview_attack` |
 | `get_targets` | `unit` | `GET /targets` |
+| `preview_move` | `unit`, `x`, `y` | `GET /preview_move` |
+| `get_reachable` | `unit` | `GET /reachable` |
 | `get_religion` | — | `GET /religion` |
 | `get_city_states` | — | `GET /citystates` |
 | `get_spies` | — | `GET /spies` |
@@ -271,7 +275,7 @@ Names are exact. `UNKNOWN_ID` returns up to 8 substring matches, so `Monu` sugge
 | `initialize` | `protocolVersion: "2025-06-18"`, `capabilities.tools`, `serverInfo: {name:"unciv-agent",version:"0.1.0"}` |
 | `notifications/initialized` | HTTP `202`, empty body |
 | `ping` | `{}` |
-| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 48 entries |
+| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 50 entries |
 | `tools/call` | `{content:[{type:"text",text:"<tool JSON as a string>"}],isError:bool}` |
 | anything else | `-32601 Method not found` |
 
@@ -379,6 +383,31 @@ civilizations appear; the acting civilization is excluded.
 `GET /policies` — `{"adopted":[…],"culture":N,"cultureNeededForNextPolicy":M,"canAdoptPolicy":bool,"adoptableBranches":[…],"tree":[{branch,policies:[{name,adopted,requires,ready}]}]}`.
 `tree` covers every branch in the ruleset, so sub-policies are visible before the branch is
 opened; `ready` means prerequisites are met (culture is a separate question).
+
+`GET /preview_move?unit=&x=&y=` — what the client shows when you hover a move order.
+
+```json
+{"unit":"unit-2","name":"Warrior","from":[-1,-6],"to":[1,-6],"distance":2,
+ "moves":2.0,"maxMoves":2,"reachableThisTurn":false,"turnsToReach":2,
+ "totalMovement":3.0,"movesLeftAfter":1.0,
+ "path":[{"x":0,"y":-6,"terrain":"Hill","cost":2.0},
+         {"x":1,"y":-6,"terrain":"Grassland","cost":1.0}],
+ "destination":{"terrain":"Grassland","improvement":null,"city":null},
+ "blocked":null,"blockedHint":null}
+```
+
+`reachableThisTurn` and `path` with per-tile `cost` come from the engine's own pathfinder, so they
+match what `move_unit` will actually do. Beyond this turn the route is planned by cost and walked
+turn by turn, so `turnsToReach` is an estimate, not a promise — treat it as "about this many".
+
+`blocked` is the engine's `CannotMoveToReason` (`TerrainImpassable`, `CannotEnterOcean`,
+`CannotEnterForeignLand`, `TileIsNotEmpty`, …) with a Chinese `blockedHint` next to it. A unit that
+cannot enter the tile at all gets a route only if one exists; otherwise `turnsToReach` is `null`
+and `path` is empty.
+
+`GET /reachable?unit=` — every tile the unit can reach this turn, sorted by cost:
+`{"from":[x,y],"moves":2.0,"tiles":[{x,y,cost,terrain,city?,improvement?}],"count":N}`. This is the
+client's move overlay; use it instead of guessing which neighbours are worth considering.
 
 `GET /targets?unit=` — every tile this unit can hit this turn, each with the same damage ranges
 as `preview_attack`. Use it instead of computing hex geometry: `{"unit","name","range",
