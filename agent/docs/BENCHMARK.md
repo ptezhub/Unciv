@@ -159,6 +159,11 @@ Two real Settler runs so far, for calibration:
   could not build a single improvement. That run is why economy is a separate dimension: the
   score would have looked fine while the position was collapsing.
 
+- Peaceful opening after workers could build, turn 100: 3 cities, 28 pop, 20 techs, +33.3 gold,
+  567 banked, 19 happiness, 13 improvements and 9 road tiles, all cities connected, no war. Same
+  strategy as the run above, one capability apart: the difference between -14 and +33 per turn was
+  farms, plantations and the trade routes they made possible.
+
 So the reference line is not hard to beat with a competent opening. The interesting signal is a
 model that hits expansion and science but zeroes economy — that pattern means it is spending
 without building, which is exactly what the second run did.
