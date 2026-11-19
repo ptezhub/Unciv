@@ -367,7 +367,8 @@ Note the candidates here are objects, unlike intent errors where they are string
 `GET /map?cx&cy&radius` — `radius` defaults to 3 and is clamped to `0..12`; `cx`/`cy` default
 to `0,0`. Only tiles explored by the acting civilization are returned:
 `{"center":[cx,cy],"radius":r,"tiles":[{x,y,terrain,visible,resource?,owner?,city?,units?}]}`.
-`units` lists foreign units standing on a tile you can see — `{id,owner,name,hp,military}` —
+`units` lists the units standing on a tile you can see — `{id,own,owner,name,hp,military}`,
+where `own` is true for your own, so one read is enough to see both sides —
 which is how you notice an incoming army before it reaches a city.
 `resource` is omitted when the tile has none; `owner` is the civilization owning the tile;
 `city` appears **only on a city centre tile** — the engine's own `Tile.getCity()` returns the
@@ -404,6 +405,11 @@ turn by turn, so `turnsToReach` is an estimate, not a promise — treat it as "a
 `CannotEnterForeignLand`, `TileIsNotEmpty`, …) with a Chinese `blockedHint` next to it. A unit that
 cannot enter the tile at all gets a route only if one exists; otherwise `turnsToReach` is `null`
 and `path` is empty.
+
+`techsKnown` is everything already researched — `/techs` only lists what is available, which
+cannot answer "can I build a plantation yet". `luxuries.unconnected` lists luxury resources on
+tiles your cities can work that no improvement has connected yet, with the tile, so the fix is
+visible instead of inferred from a happiness number.
 
 `GET /reachable?unit=` — every tile the unit can reach this turn, sorted by cost:
 `{"from":[x,y],"moves":2.0,"tiles":[{x,y,cost,terrain,city?,improvement?}],"count":N}`. This is the
@@ -446,6 +452,9 @@ prompt. It aggregates what the client would show:
  "culture":88,"culturePerTurn":3.0,"cultureForNextPolicy":45,
  "faith":12,"faithPerTurn":2.0,"happiness":4,
  "research":{"current":"Pottery","turnsLeft":3,"available":4},
+ "techsKnown":["Agriculture","Pottery",…],
+ "luxuries":{"connected":[{"name":"Gems","count":1}],
+             "unconnected":[{"name":"Cotton","at":[5,0],"improvement":null}]},
  "cities":[{"id","name","pop","at","foodPerTurn","turnsToGrowth","production","turnsToBuild",
             "isPuppet","inResistance","health","canBombard","enemyAdjacent"}],
  "unitsNeedingOrders":[{"id","name","x","y","moves","military","civilian","canAttack","canPromote",

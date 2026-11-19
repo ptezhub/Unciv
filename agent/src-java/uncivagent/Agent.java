@@ -585,7 +585,7 @@ public class Agent {
                   .append(",\"pop\":").append(city.getPopulation().getPopulation())
                   .append(",\"x\":").append(city.getLocation().getX())
                   .append(",\"y\":").append(city.getLocation().getY())
-                  .append(",\"production\":").append(quote(city.getCityConstructions().getCurrentConstruction().getName()))
+                  .append(",\"production\":").append(productionJson(city))
                   .append('}');
         }
         StringBuilder units = new StringBuilder();
@@ -699,7 +699,7 @@ public class Agent {
               .append(",\"pop\":").append(city.getPopulation().getPopulation())
               .append(",\"x\":").append(city.getLocation().getX())
               .append(",\"y\":").append(city.getLocation().getY())
-              .append(",\"production\":").append(quote(city.getCityConstructions().getCurrentConstruction().getName()))
+              .append(",\"production\":").append(productionJson(city))
               .append('}');
         }
         return sb.append("]}").toString();
@@ -749,7 +749,7 @@ public class Agent {
                 + ",\"pop\":" + target.getPopulation().getPopulation()
                 + ",\"at\":[" + target.getLocation().getX() + "," + target.getLocation().getY() + "]"
                 + ",\"focus\":" + quote(target.getCityFocus().name())
-                + ",\"production\":" + quote(target.getCityConstructions().getCurrentConstruction().getName())
+                + ",\"production\":" + productionJson(target)
                 + ",\"queue\":[" + queue + "]"
                 + ",\"workedTiles\":" + workedTilesJson(target)
                 + ",\"stats\":{\"food\":" + round1(stats.getFood())
@@ -980,9 +980,10 @@ public class Agent {
                     Iterator<MapUnit> uit = t.getUnits().iterator();
                     while (uit.hasNext()) {
                         MapUnit mu = uit.next();
-                        if (mu.getCiv() == c) continue;   // 自己的单位在 /units
+                        boolean own = mu.getCiv() == c;
                         if (us.length() > 0) us.append(',');
                         us.append("{\"id\":").append(quote("unit-" + mu.getId()))
+                          .append(",\"own\":").append(own)
                           .append(",\"owner\":").append(quote(mu.getCiv().getCivName()))
                           .append(",\"name\":").append(quote(mu.getName()))
                           .append(",\"hp\":").append(mu.getHealth())
@@ -1269,6 +1270,64 @@ public class Agent {
               .append('}');
         }
         sb.append(']');
+
+        // 已研究的科技：/techs 只列可研究的，回答不了「我会不会造种植园」
+        sb.append(",\"techsKnown\":[");
+        boolean firstTech = true;
+        try {
+            java.util.List<String> known = new java.util.ArrayList<>(c.getTech().getTechsResearched());
+            java.util.Collections.sort(known);
+            for (String t : known) {
+                if (!firstTech) sb.append(',');
+                firstTech = false;
+                sb.append(quote(t));
+            }
+        } catch (Throwable ignored) { }
+        sb.append(']');
+
+        // 奢侈品：连上了几份、领地里还有哪些没连
+        sb.append(",\"luxuries\":{\"connected\":[");
+        try {
+            java.util.HashMap<String, Integer> amounts = c.getCivResourcesByName();
+            java.util.LinkedHashMap<String, Integer> lux = new java.util.LinkedHashMap<>();
+            for (com.unciv.models.ruleset.tile.TileResource r : gi.getRuleset().getTileResources().values()) {
+                if (r.getResourceType() != com.unciv.models.ruleset.tile.ResourceType.Luxury) continue;
+                int n = amounts.getOrDefault(r.getName(), 0);
+                if (n > 0) lux.put(r.getName(), n);
+            }
+            boolean firstLux = true;
+            for (Map.Entry<String, Integer> e : lux.entrySet()) {
+                if (!firstLux) sb.append(',');
+                firstLux = false;
+                sb.append("{\"name\":").append(quote(e.getKey()))
+                  .append(",\"count\":").append(e.getValue()).append('}');
+            }
+            sb.append("],\"unconnected\":[");
+            boolean firstUn = true;
+            java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
+            for (City city : c.getCities()) {
+                Iterator<Tile> tit = city.getWorkableTiles().iterator();
+                while (tit.hasNext()) {
+                    Tile t = tit.next();
+                    String res = t.getResource();
+                    if (res == null) continue;
+                    com.unciv.models.ruleset.tile.TileResource tr = gi.getRuleset().getTileResources().get(res);
+                    if (tr == null || tr.getResourceType() != com.unciv.models.ruleset.tile.ResourceType.Luxury) continue;
+                    if (amounts.getOrDefault(res, 0) > 0) continue;
+                    if (!seen.add(res)) continue;
+                    if (!firstUn) sb.append(',');
+                    firstUn = false;
+                    sb.append("{\"name\":").append(quote(res))
+                      .append(",\"at\":[").append(t.getPosition().getX()).append(',')
+                      .append(t.getPosition().getY()).append(']')
+                      .append(",\"improvement\":").append(t.getImprovement() == null
+                              ? "null" : quote(t.getImprovement()))
+                      .append('}');
+                }
+            }
+            sb.append(']');
+        } catch (Throwable ignored) { sb.append(']'); }
+        sb.append('}');
 
         // 需要操作的单位
         sb.append(",\"unitsNeedingOrders\":[");
@@ -1811,6 +1870,17 @@ public class Agent {
             }
         } catch (Throwable ignored) { }
         return sb.append("],\"count\":").append(n).append('}').toString();
+    }
+
+    /** 空生产在三个投影里必须同一个写法：null，不是 "Nothing" */
+    static String productionJson(City city) {
+        try {
+            String n = city.getCityConstructions().getCurrentConstruction().getName();
+            if (n == null || n.isEmpty() || n.equals("Nothing")) return "null";
+            return quote(n);
+        } catch (Throwable e) {
+            return "null";
+        }
     }
 
     private static String round2(float f) {

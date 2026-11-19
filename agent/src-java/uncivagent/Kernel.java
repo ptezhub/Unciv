@@ -1079,7 +1079,8 @@ public final class Kernel {
 
         events.add("{\"type\":\"trade_proposed\",\"civ\":" + q(other.getCivName())
                 + ",\"give\":" + offersJson(trade.getOurOffers())
-                + ",\"want\":" + offersJson(trade.getTheirOffers()) + "}");
+                + ",\"want\":" + offersJson(trade.getTheirOffers())
+                + ",\"note\":" + q("对方要到下一回合才回应，届时 /trade 的 pending 里会出现回复或还价") + "}");
     }
 
     private static void applyRespondTrade(GameInfo gi, Civilization actor, String target, Map<String, Object> params, List<String> events) {
@@ -1257,8 +1258,21 @@ public final class Kernel {
 
         CityStateFunctions f = cs.getCityStateFunctions();
         if (protect) {
-            if (!f.otherCivCanPledgeProtection(actor))
-                throw new Fail("NOT_AVAILABLE", "现在不能承诺保护 " + cs.getCivName());
+            if (!f.otherCivCanPledgeProtection(actor)) {
+                String why = "现在不能承诺保护 " + cs.getCivName();
+                try {
+                    com.unciv.logic.civilization.diplomacy.DiplomacyManager dm = cs.getDiplomacyManager(actor);
+                    if (dm != null) {
+                        int inf = (int) dm.getInfluence();
+                        if (inf < 0) why += "：影响力是负的（" + inf + "），回到 0 以上才行";
+                        else if (dm.getDiplomaticStatus()
+                                == com.unciv.logic.civilization.diplomacy.DiplomaticStatus.Protector)
+                            why += "：已经在保护了";
+                        else why += "：影响力 " + inf + "，或处于战争状态";
+                    }
+                } catch (Throwable ignored) { }
+                throw new Fail("NOT_AVAILABLE", why);
+            }
             f.addProtectorCiv(actor);
         } else {
             if (!f.otherCivCanWithdrawProtection(actor)) {
