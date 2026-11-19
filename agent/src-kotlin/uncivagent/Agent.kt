@@ -158,6 +158,8 @@ object Agent {
 
     /** 把当前对局写成同步文件，供官方客户端拉取。写临时文件再 rename，避免读到半个文件。 */
     private fun publishSync(gi: GameInfo) {
+        // 客户端格式总是发布；UNCIV_AGENT_SYNC 那个名字只是额外的"客户端上传回来"通道
+        publishClientFiles(gi)
         val name = syncName ?: return
         try {
             val dir = fileRoot
@@ -172,6 +174,21 @@ object Agent {
             }
         } catch (t: Throwable) {
             System.out.println("[unciv-agent] 发布同步文件失败: " + t.message)
+        }
+    }
+
+    /** 按官方客户端的多人格式发布：<gameId> 和 <gameId>_Preview，内容都是 gzip+base64 的 JSON。
+     *  客户端在多人界面里「按 ID 加入」时拉的就是这两个文件；少了它们，客户端只能当本地存档打开。 */
+    private fun publishClientFiles(gi: GameInfo) {
+        try {
+            val dir = fileRoot
+            if (!dir.exists()) dir.mkdirs()
+            val gameText = com.unciv.logic.files.UncivFiles.gameInfoToString(gi, true, true)
+            File(dir, gi.gameId).writeText(gameText, Charsets.UTF_8)
+            val previewText = com.unciv.logic.files.UncivFiles.gameInfoToString(gi.asPreview())
+            File(dir, gi.gameId + "_Preview").writeText(previewText, Charsets.UTF_8)
+        } catch (t: Throwable) {
+            System.out.println("[unciv-agent] 发布客户端文件失败: " + t.message)
         }
     }
 
