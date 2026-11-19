@@ -9,7 +9,8 @@ CORE="$ROOT/core/build/libs/core-5.0.1.jar"
 GAME="${UNCIV_JAR:-/home/node/.openclaw/cache/unciv/Unciv.jar}"
 OUT="$ROOT/agent-classes"
 
-M2="$HOME/.gradle/caches/modules-2/files-2.1"
+M2="${M2:-$HOME/.gradle/caches/modules-2/files-2.1}"
+[ -d "$M2" ] || M2="$HOME/.openclaw/cache/gradle-home/caches/modules-2/files-2.1"
 pick() { find "$M2/$1" -name "$2" 2>/dev/null | sort | tail -1; }
 KC="$(pick org.jetbrains.kotlin/kotlin-compiler-embeddable 'kotlin-compiler-embeddable-*.jar')"
 STD="$(pick org.jetbrains.kotlin/kotlin-stdlib 'kotlin-stdlib-*.jar')"

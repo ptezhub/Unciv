@@ -183,9 +183,14 @@ object Agent {
         try {
             val dir = fileRoot
             if (!dir.exists()) dir.mkdirs()
-            val gameText = com.unciv.logic.files.UncivFiles.gameInfoToString(gi, true, true)
+            // 客户端靠 isOnlineMultiplayer 决定"我是谁"：不设它就会当成单机局，
+            // 直接以当前玩家（罗马）的身份进去。设了才会按 playerId 匹配，
+            // 匹配不到就变成旁观者。用克隆，避免影响宿主自己的推进逻辑。
+            val forClient = gi.clone()
+            forClient.gameParameters.isOnlineMultiplayer = true
+            val gameText = com.unciv.logic.files.UncivFiles.gameInfoToString(forClient, true, true)
             File(dir, gi.gameId).writeText(gameText, Charsets.UTF_8)
-            val previewText = com.unciv.logic.files.UncivFiles.gameInfoToString(gi.asPreview())
+            val previewText = com.unciv.logic.files.UncivFiles.gameInfoToString(forClient.asPreview())
             File(dir, gi.gameId + "_Preview").writeText(previewText, Charsets.UTF_8)
         } catch (t: Throwable) {
             System.out.println("[unciv-agent] 发布客户端文件失败: " + t.message)
