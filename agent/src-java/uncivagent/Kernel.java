@@ -697,13 +697,14 @@ public final class Kernel {
             throw f;
         } catch (Throwable ignored) { }
         HexCoord from = unit.getTile().getPosition();
-        if (!stayOnTile) Battle.INSTANCE.movePreparingAttack(attacker, hit, false);
         Battle.DamageDealt dmg;
         try {
+            if (!stayOnTile) Battle.INSTANCE.movePreparingAttack(attacker, hit, false);
             dmg = Battle.INSTANCE.attackOrNuke(attacker, hit);
         } catch (Throwable e) {
-            throw new Fail("NOT_AVAILABLE", "引擎拒绝这次攻击: " + e.getMessage()
-                    + "（常见原因是目标格上有被俘平民，或路线判定与引擎不一致）");
+            // 引擎自己抛异常时不能漏成 INTERNAL：模型需要知道这是哪一步不行
+            throw new Fail("NOT_AVAILABLE", "引擎拒绝这次攻击（" + e.getClass().getSimpleName()
+                    + ": " + e.getMessage() + "）；多半是目标格上有被俘单位，或路线判定与引擎不一致");
         }
         HexCoord at = unit.getTile().getPosition();
         events.add("{\"type\":\"attacked\",\"unit\":" + q("unit-" + unit.getId())

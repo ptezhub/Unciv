@@ -239,6 +239,7 @@ def run_all(h):
     check("J", "J5 attack preview is read-only", "P0", lambda: preview_readonly(h))
     check("J", "J6 worker tools refuse cleanly", "P1", lambda: worker_tools(h))
     check("J", "J7 move preview is read-only", "P0", lambda: move_preview(h))
+    check("J", "J8 targets are really attackable", "P1", lambda: targets_are_real(h))
 
     print("\nI failure cost")
     check("I", "I1 failed action is free", "P0", lambda: failed_action_free(h))
@@ -682,6 +683,34 @@ def move_preview(h):
     after = next(x for x in u3["units"] if x["id"] == u["id"])
     assert (after["x"], after["y"]) == (first["x"], first["y"]), (after, first)
     return True, "read-only, first step matches the preview"
+
+
+def targets_are_real(h):
+    """get_targets 列出来的目标必须真能打，不能是引擎自己都到不了的格子。
+    这条是给"距离表参数和引擎不一致"那类 bug 兜底的。"""
+    h.new_game(seed=1234)
+    h.ensure_city()
+    _, units = h.get("/units")
+    mil = next((u for u in units["units"] if u["military"] and u["moves"] > 0), None)
+    if mil is None:
+        return True, "no military unit with movement, skipped"
+    _, t = h.get("/targets?unit=" + mil["id"])
+    if "error" in t:
+        assert t["error"]["code"] in ("NOT_YOUR_UNIT", "UNKNOWN_ID"), t
+        return True, "targets refused cleanly"
+    targets = t.get("targets") or []
+    if not targets:
+        return True, "nothing in range, skipped"
+    for tg in targets[:2]:
+        _, pv = h.get("/preview_attack?unit=%s&x=%d&y=%d" % (mil["id"], tg["x"], tg["y"]))
+        if "error" in pv:
+            assert pv["error"]["code"] != "INTERNAL", pv
+            continue
+        assert pv.get("inRange") is True, (pv, tg)
+    _, r = h.intent("attack", mil["id"], {"x": targets[0]["x"], "y": targets[0]["y"]})
+    if not r.get("ok"):
+        assert r["error"]["code"] != "INTERNAL", r
+    return True, "%d target(s), first one attacked without INTERNAL" % len(targets)
 
 
 def worker_tools(h):
