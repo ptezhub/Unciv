@@ -1377,7 +1377,7 @@ public class Agent {
                 sb.append(",\"attackable\":[");
                 try {
                     com.unciv.logic.map.mapunit.movement.PathsToTilesWithinTurn paths =
-                            u.getMovement().getDistanceToTiles(true, null, null, true);
+                            Kernel.defaultPaths(u);
                     ArrayList<com.unciv.logic.battle.AttackableTile> list =
                             com.unciv.logic.battle.TargetHelper.INSTANCE.getAttackableEnemies(u, paths, null, false);
                     java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
@@ -1803,7 +1803,7 @@ public class Agent {
 
         // 这回合能不能到
         com.unciv.logic.map.mapunit.movement.PathsToTilesWithinTurn paths = null;
-        try { paths = unit.getMovement().getDistanceToTiles(true, null, null, true); }
+        try { paths = Kernel.defaultPaths(unit); }
         catch (Throwable ignored) { }
 
         if (paths != null && paths.containsKey(dest)) {
@@ -1982,7 +1982,7 @@ public class Agent {
         int n = 0;
         try {
             com.unciv.logic.map.mapunit.movement.PathsToTilesWithinTurn paths =
-                    unit.getMovement().getDistanceToTiles(true, null, null, true);
+                    Kernel.defaultPaths(unit);
             List<Tile> keys = new ArrayList<>(paths.keySet());
             keys.sort((a, b) -> Float.compare(paths.get(a).getTotalMovement(), paths.get(b).getTotalMovement()));
             for (Tile t : keys) {
@@ -2038,7 +2038,7 @@ public class Agent {
             com.unciv.logic.battle.MapUnitCombatant attacker =
                     new com.unciv.logic.battle.MapUnitCombatant(unit);
             com.unciv.logic.map.mapunit.movement.PathsToTilesWithinTurn paths =
-                    unit.getMovement().getDistanceToTiles(true, null, null, true);
+                    Kernel.defaultPaths(unit);
             ArrayList<com.unciv.logic.battle.AttackableTile> list =
                     com.unciv.logic.battle.TargetHelper.INSTANCE.getAttackableEnemies(unit, paths, null, false);
             LinkedHashSet<String> seen = new LinkedHashSet<>();

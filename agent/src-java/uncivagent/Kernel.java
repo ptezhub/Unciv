@@ -485,6 +485,16 @@ public final class Kernel {
                 + ",\"gold\":" + actor.getGold() + "}");
     }
 
+    /** 引擎的默认参数：考虑 zone of control、考虑护送。
+     *
+     *  Java 调不到 Kotlin 的默认参数，只能把四个实参写死，所以全项目只留这一处。
+     *  必须和引擎内部保持一致（Battle.movePreparingAttack 用的是默认值），否则我们算出来的
+     *  可攻击目标可能不在引擎自己的距离表里，那边会抛 "Can't reach Tile"。
+     *  引擎改默认值时只改这里。 */
+    static PathsToTilesWithinTurn defaultPaths(MapUnit unit) {
+        return unit.getMovement().getDistanceToTiles(true, null, null, true);
+    }
+
     /** 小地图边缘外 TileMap.get 会抛异常，统一收口。 */
     static Tile tileAt(GameInfo gi, int x, int y) {
         try {
@@ -630,10 +640,7 @@ public final class Kernel {
         PathsToTilesWithinTurn paths;
         ArrayList<AttackableTile> targets;
         try {
-            // 必须和引擎内部一致（默认考虑 zone of control、考虑护送），否则我们算出来的
-            // 可攻击目标可能不在引擎自己的距离表里，Battle.movePreparingAttack 会抛
-            // "Can't reach Tile"，被外层包成 INTERNAL。
-            paths = unit.getMovement().getDistanceToTiles(true, null, null, true);
+            paths = defaultPaths(unit);
             targets = TargetHelper.INSTANCE.getAttackableEnemies(unit, paths, null, stayOnTile);
         } catch (Throwable e) {
             throw new Fail("ILLEGAL_TARGET", "算不出攻击路线: " + e.getMessage());
