@@ -237,6 +237,7 @@ def run_all(h):
     check("J", "J3 briefing complete", "P0", lambda: briefing_shape(h))
     check("J", "J4 guide available", "P1", lambda: guide_shape(h))
     check("J", "J5 attack preview is read-only", "P0", lambda: preview_readonly(h))
+    check("J", "J6 worker tools refuse cleanly", "P1", lambda: worker_tools(h))
 
     print("\nI failure cost")
     check("I", "I1 failed action is free", "P0", lambda: failed_action_free(h))
@@ -633,6 +634,27 @@ def preview_readonly(h):
     assert after["turn"] == before["turn"], "preview advanced the turn"
     assert now["moves"] == mil["moves"], "preview spent movement"
     return True, "preview changes nothing"
+
+
+def worker_tools(h):
+    """工人能力在 UI 层，内核自己实现了 build_improvement；这里只验证拒绝得干净。"""
+    h.new_game(seed=9191)
+    h.ensure_city()
+    _, tools = h.get("/tools")
+    names = {t["name"] for t in tools["tools"]}
+    assert "build_improvement" in names and "disband_unit" in names, sorted(names)
+    _, units = h.get("/units")
+    mil = next((u for u in units["units"] if u["military"]), None)
+    assert mil, "no military unit"
+    _, r = h.intent("build_improvement", mil["id"], {"improvement": "Farm"})
+    assert not r.get("ok"), r
+    assert r["error"]["code"] == "NOT_AVAILABLE", r
+    assert "工人" in r["error"]["message"], r
+    _, r2 = h.intent("build_improvement", mil["id"], {"improvement": "NoSuchThing"})
+    assert not r2.get("ok") and r2["error"]["code"] in ("NOT_AVAILABLE", "UNKNOWN_ID"), r2
+    _, acts = h.get("/actions?unit=" + str(mil["id"].split("-")[-1]))
+    assert all(a["type"] != "build_improvement" for a in acts["actions"]), acts
+    return True, "non-worker refused, no phantom action"
 
 
 def guide_shape(h):

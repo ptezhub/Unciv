@@ -193,7 +193,7 @@ candidates are there to be retried.
 
 ## Tool table
 
-46 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
+48 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
 drift from the code.
 
 Read (`kind: read`) — these are not intents; call the HTTP route or the MCP tool:
@@ -226,12 +226,14 @@ Act (`kind: act`):
 |---|---|---|
 | `move_unit` | `unit`, `x`, `y` | moves toward the tile: exactly if it is reachable this turn, otherwise as far as the path allows. The event carries `arrived`, `tilesLeft` and `blockedBy` (set when the destination is occupied, which is why a move can stop short and still report ok). A tile the unit can never reach is `ILLEGAL_TARGET`; no movement left is `NOT_AVAILABLE` |
 | `found_city` | `unit` | settler must be able to found here |
+| `build_improvement` | `improvement` | worker starts an improvement on its own tile; it must stay there, one turn of progress per turn |
+| `disband_unit` | — | removes the unit |
 | `set_city_production` | `city`, `item`, `count`, `mode` | `mode` defaults to `replace` (clears the queue first); `append` keeps what is already queued. The event echoes the engine's real queue, so `queued` is never a guess |
 | `set_research` | `tech`, `techs?` | `techs` queues several in order, so research does not idle for a turn when one completes |
 | `attack` | `unit`, `x`, `y` | melee/ranged; target must be reachable this turn |
 | `bombard` | `unit`, `x`, `y` | ranged only, unit stays put |
 | `promote_unit` | `unit`, `promotion` | must be in the unit's available promotions |
-| `unit_action` | `unit`, `action`, `id` | a `UnitActionType` name: `Fortify`, `Sleep`, `Explore`, `Automate`, `Pillage`, `CreateImprovement`, …; `id` selects the concrete target (improvement name, unique) |
+| `unit_action` | `unit`, `action`, `id` | a `UnitActionType` name: `Fortify`, `Sleep`, `Explore`, `Automate`, `Pillage`, …; `id` selects the concrete target (unique). `CreateImprovement` is not here — the engine keeps it in the UI layer, use `build_improvement`. `Automate` does not just set a flag: the host runs one automation pass immediately and returns where the unit ended up and what it started, because nothing would drive the flag in a headless game |
 | `set_city_focus` | `city`, `focus` | a `CityFocus` name |
 | `purchase_construction` | `city`, `item`, `currency?` | `Gold` (default) or `Faith`. Price and eligibility come from the engine (`getStatBuyCost` + `isConstructionPurchaseAllowed`), so an unaffordable buy is rejected instead of driving gold negative |
 | `declare_war` | `civ` | must have met them and be allowed to declare |
@@ -269,7 +271,7 @@ Names are exact. `UNKNOWN_ID` returns up to 8 substring matches, so `Monu` sugge
 | `initialize` | `protocolVersion: "2025-06-18"`, `capabilities.tools`, `serverInfo: {name:"unciv-agent",version:"0.1.0"}` |
 | `notifications/initialized` | HTTP `202`, empty body |
 | `ping` | `{}` |
-| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 46 entries |
+| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 48 entries |
 | `tools/call` | `{content:[{type:"text",text:"<tool JSON as a string>"}],isError:bool}` |
 | anything else | `-32601 Method not found` |
 
@@ -417,7 +419,9 @@ prompt. It aggregates what the client would show:
  "research":{"current":"Pottery","turnsLeft":3,"available":4},
  "cities":[{"id","name","pop","at","foodPerTurn","turnsToGrowth","production","turnsToBuild",
             "isPuppet","inResistance","health","canBombard","enemyAdjacent"}],
- "unitsNeedingOrders":[{"id","name","x","y","moves","military","civilian","canAttack","canPromote"}],
+ "unitsNeedingOrders":[{"id","name","x","y","moves","military","civilian","canAttack","canPromote",
+                        "canBuild":["Farm","Mine",…],"workingOn":"Farm","turnsLeft":3,
+                        "attackable":[{x,y,type}]}],
  "diplomacy":{"known":[{civ,isCityState,atWar,canDeclareWar,influence}]},
  "cityStates":[{civ,influence,ally}],
  "religion":{"state","faith","hasFreeBeliefs"},
@@ -427,7 +431,10 @@ prompt. It aggregates what the client would show:
 ```
 
 `unitsNeedingOrders` is only the units that still have movement, so an empty list means the
-turn is ready to end. `enemyAdjacent` is true when a foreign military unit stands next to a
+turn is ready to end. A worker also carries `canBuild` (what it can start on its own tile),
+`workingOn` and `turnsLeft`; a unit that can attack carries `attackable`, the tiles it can hit
+this turn, so nothing has to compute hex geometry. Both are capped, so use `get_targets` or
+`build_improvement`'s error for the full picture. `enemyAdjacent` is true when a foreign military unit stands next to a
 city. `warnings` is the same list `end_turn` returns, so a model that reads the briefing can
 act before it loses a turn.
 

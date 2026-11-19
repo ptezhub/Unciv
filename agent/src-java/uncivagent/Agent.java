@@ -1277,8 +1277,50 @@ public class Agent {
               .append(",\"military\":").append(u.isMilitary())
               .append(",\"civilian\":").append(u.isCivilian())
               .append(",\"canAttack\":").append(u.canAttack())
-              .append(",\"canPromote\":").append(u.getPromotions().canBePromoted())
-              .append('}');
+              .append(",\"canPromote\":").append(u.getPromotions().canBePromoted());
+            // 工人：这格能造什么，别让模型自己翻规则
+            if (u.getCache().getHasUniqueToBuildImprovements()) {
+                sb.append(",\"canBuild\":[");
+                int n = 0;
+                for (com.unciv.models.ruleset.tile.TileImprovement ti
+                        : u.getTile().getRuleset().getTileImprovements().values()) {
+                    boolean ok = false;
+                    try { ok = u.canBuildImprovement(ti, u.getTile()); } catch (Throwable ignored) { }
+                    if (!ok) continue;
+                    if (n++ > 0) sb.append(',');
+                    sb.append(quote(ti.getName()));
+                    if (n >= 8) break;
+                }
+                sb.append(']');
+                String wip = u.getTile().getImprovementInProgress();
+                sb.append(",\"workingOn\":").append(wip == null ? "null" : quote(wip))
+                  .append(",\"turnsLeft\":").append(u.getTile().getTurnsToImprovement());
+            }
+            // 军事：这回合打得到谁
+            if (u.canAttack()) {
+                sb.append(",\"attackable\":[");
+                try {
+                    com.unciv.logic.map.mapunit.movement.PathsToTilesWithinTurn paths =
+                            u.getMovement().getDistanceToTiles(false, null, null, false);
+                    ArrayList<com.unciv.logic.battle.AttackableTile> list =
+                            com.unciv.logic.battle.TargetHelper.INSTANCE.getAttackableEnemies(u, paths, null, false);
+                    java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
+                    int n = 0;
+                    for (com.unciv.logic.battle.AttackableTile at : list) {
+                        Tile t = at.getTileToAttack();
+                        String key = t.getPosition().getX() + "," + t.getPosition().getY();
+                        if (!seen.add(key)) continue;
+                        if (n++ > 0) sb.append(',');
+                        sb.append("{\"x\":").append(t.getPosition().getX())
+                          .append(",\"y\":").append(t.getPosition().getY())
+                          .append(",\"type\":").append(quote(t.isCityCenter() ? "city" : "unit"))
+                          .append('}');
+                        if (n >= 6) break;
+                    }
+                } catch (Throwable ignored) { }
+                sb.append(']');
+            }
+            sb.append('}');
         }
         sb.append(']');
 
@@ -1353,7 +1395,13 @@ public class Agent {
         if (idleCities > 0) warnings.add(idleCities + " 座城没有在生产任何东西");
         if (cur == null || cur.isEmpty()) warnings.add("没有在研究的科技");
         if (gpt < 0 && gold >= 0) warnings.add("每回合亏 " + round1(gpt) + " 金币");
-        if (gold < 0) warnings.add("国库为负，单位会被解散");
+        if (gold <= -200) warnings.add("国库 " + gold + "，已经在解散军队抵债");
+        else if (gpt < 0) {
+            int turnsLeft = (int) Math.floor((gold + 200) / -gpt);
+            warnings.add("每回合亏 " + round1(gpt) + " 金币，国库 " + gold
+                    + "，跌破 -200 才解散军队"
+                    + (turnsLeft > 0 ? "，大约 " + turnsLeft + " 回合" : ""));
+        }
         if (pending.length() > 0) warnings.add("有刚打下的城还没决定吞并/傀儡");
         if (happiness < 0) warnings.add("快乐为负（" + happiness + "），增长和产能会受影响");
         StringBuilder w = new StringBuilder();
@@ -1751,6 +1799,19 @@ public class Agent {
         } catch (Throwable t) {
             truncated = t.getClass().getSimpleName();
         }
+        // 引擎的 UnitActions 不含 UI 专用动作，这里补上内核真正实现的那两个
+        try {
+            if (unit.getCache().getHasUniqueToBuildImprovements()) {
+                sb.append(",{\"type\":").append(quote("build_improvement"))
+                  .append(",\"title\":").append(quote("造设施"))
+                  .append(",\"available\":").append(unit.hasMovement())
+                  .append('}');
+            }
+            sb.append(",{\"type\":").append(quote("disband_unit"))
+              .append(",\"title\":").append(quote("解散单位"))
+              .append(",\"available\":true")
+              .append('}');
+        } catch (Throwable ignored) { }
         sb.append("],\"truncated\":").append(truncated == null ? "null" : quote(truncated)).append('}');
         return sb.toString();
     }

@@ -127,6 +127,10 @@ public final class Kernel {
                 "{\"type\":\"object\",\"properties\":{\"civ\":{\"type\":\"string\"},\"give\":{\"type\":\"array\"},\"want\":{\"type\":\"array\"}},\"required\":[\"civ\"]}", "act");
         tool("respond_trade", "回应某个文明发来的交易请求：accept 为 true 成交，false 拒绝。",
                 "{\"type\":\"object\",\"properties\":{\"civ\":{\"type\":\"string\"},\"accept\":{\"type\":\"boolean\"},\"index\":{\"type\":\"integer\"}},\"required\":[\"civ\"]}", "act");
+        tool("build_improvement", "让工人在这块地上开始造设施（农场/矿/路等）。之后每回合工人留在这格不动，进度自己走。",
+                "{\"type\":\"object\",\"properties\":{\"improvement\":{\"type\":\"string\"}},\"required\":[\"improvement\"]}", "act");
+        tool("disband_unit", "解散自己的单位。",
+                "{\"type\":\"object\",\"properties\":{}}", "act");
         tool("get_targets", "这个单位这回合能打的所有目标格，附双向伤害区间。",
                 "{\"type\":\"object\",\"properties\":{\"unit\":{\"type\":\"string\"}},\"required\":[\"unit\"]}", "read");
         tool("preview_attack", "不执行动作，只算这一击的伤害范围：双方力量、期望伤害、会不会死、够不够得着。",
@@ -208,6 +212,8 @@ public final class Kernel {
             switch (type) {
                 case "move_unit":  applyMove(gameInfo, actor, target, params, events); break;
                 case "found_city": applyFoundCity(gameInfo, actor, target, events); break;
+                case "build_improvement": applyBuildImprovement(gameInfo, actor, target, params, events); break;
+                case "disband_unit": applyDisbandUnit(gameInfo, actor, target, events); break;
                 case "set_city_production": applyProduction(gameInfo, actor, target, params, events); break;
                 case "set_research": applyResearch(gameInfo, actor, target, params, events); break;
                 case "attack": applyAttack(gameInfo, actor, target, params, events, false); break;
@@ -320,6 +326,15 @@ public final class Kernel {
                         + occupant.getName() + " 占着，走不进去";
             }
         }
+        if (!arrived && blocked == null) {
+            // 没走到、也没人挡着：就是这回合的路到头了，或者根本走不到
+            if (left > 0) {
+                blocked = "这回合只走到这里，还差 " + left + " 格；下回合继续";
+            } else {
+                throw new Fail("ILLEGAL_TARGET", "走不到 " + x + "," + y
+                        + "：这个单位进不了那种地形（水陆不通或不可通行），没有移动");
+            }
+        }
         events.add("{\"type\":\"unit_moved\",\"unit\":" + q("unit-" + unit.getId())
                 + ",\"from\":[" + from.getX() + "," + from.getY() + "]"
                 + ",\"to\":[" + to.getX() + "," + to.getY() + "]"
@@ -347,14 +362,25 @@ public final class Kernel {
                 Tile t = unit.getTile();
                 if (t.isWater()) why.append("：水面");
                 else if (t.isImpassible()) why.append("：不可通行地形");
+                int minDist = gi.getRuleset().getModOptions().getConstants().getMinimalCityDistance();
                 City nearest = null;
                 int best = Integer.MAX_VALUE;
-                for (City c : actor.getCities()) {
-                    int d = t.aerialDistanceTo(c.getCenterTile());
-                    if (d < best) { best = d; nearest = c; }
+                for (Civilization cv : gi.getCivilizations()) {
+                    for (City c : cv.getCities()) {
+                        int d = t.aerialDistanceTo(c.getCenterTile());
+                        if (d < best) { best = d; nearest = c; }
+                    }
                 }
-                if (nearest != null)
-                    why.append("：离最近的城 ").append(nearest.getName()).append(" 只有 ").append(best).append(" 格");
+                if (nearest != null && best <= minDist) {
+                    boolean mine = nearest.getCiv() == actor;
+                    why.append("：离").append(mine ? "自己的城 " : nearest.getCiv().getCivName() + " 的城 ")
+                       .append(nearest.getName()).append(" 只有 ").append(best)
+                       .append(" 格，至少要 ").append(minDist + 1).append(" 格");
+                } else if (t.getOwningCity() != null && t.getOwningCity().getCiv() != actor) {
+                    why.append("：这里是 ").append(t.getOwningCity().getCiv().getCivName()).append(" 的领土");
+                } else {
+                    why.append("：地形不允许（可能离城市太近或地形本身不能建城）");
+                }
             } catch (Throwable ignored) { }
             throw new Fail("NOT_AVAILABLE", why.toString());
         }
@@ -367,6 +393,88 @@ public final class Kernel {
         } else {
             events.add("{\"type\":\"city_founded\"}");
         }
+    }
+
+    /** 工人造设施：引擎的入口在 UI 层（ImprovementPickerScreen），逻辑层只有
+     *  Tile.startWorkingOnImprovement + 每回合 UnitTurnManager.endTurn 里的 doWorkerTurn。 */
+    private static void applyBuildImprovement(GameInfo gi, Civilization actor, String target,
+                                              Map<String, Object> params, List<String> events) {
+        MapUnit unit = requireOwnUnit(gi, actor, target);
+        String name = Json.str(params, "improvement");
+        if (name == null) throw new Fail("BAD_PARAMS", "需要 improvement");
+        Tile tile = unit.getTile();
+        Ruleset rs = gi.getRuleset();
+
+        com.unciv.models.ruleset.tile.TileImprovement imp = rs.getTileImprovements().get(name);
+        if (imp == null) {
+            List<String> candidates = new ArrayList<>();
+            for (String k : rs.getTileImprovements().keySet()) {
+                if (k.toLowerCase().contains(name.toLowerCase())) {
+                    candidates.add(k);
+                    if (candidates.size() >= 8) break;
+                }
+            }
+            if (candidates.isEmpty()) {
+                List<String> buildable = new ArrayList<>();
+                for (com.unciv.models.ruleset.tile.TileImprovement ti : rs.getTileImprovements().values()) {
+                    try {
+                        if (unit.canBuildImprovement(ti, tile)) buildable.add(ti.getName());
+                    } catch (Throwable ignored) { }
+                }
+                throw new Fail("UNKNOWN_ID", "没有这个设施: " + name
+                        + (buildable.isEmpty() ? "" : "；这个单位在这格能造: " + buildable), candidates);
+            }
+            throw new Fail("UNKNOWN_ID", "没有这个设施: " + name, candidates);
+        }
+
+        if (!unit.getCache().getHasUniqueToBuildImprovements())
+            throw new Fail("NOT_AVAILABLE", unit.getName() + " 不能造设施，只有工人（Worker）类单位可以");
+        if (tile.isCityCenter()) throw new Fail("ILLEGAL_TARGET", "城市中心不能造设施");
+        if (!unit.hasMovement())
+            throw new Fail("NOT_AVAILABLE", unit.getName() + " 这回合没有移动力了，造设施要单位留在这格");
+        if (!unit.canBuildImprovement(imp, tile))
+            throw new Fail("NOT_AVAILABLE", unit.getName() + " 造不了 " + imp.getName()
+                    + "：地形不符、缺前置科技，或这格不允许");
+
+        List<String> problems = new ArrayList<>();
+        try {
+            com.unciv.models.ruleset.unique.GameContext ctx =
+                    new com.unciv.models.ruleset.unique.GameContext(unit);
+            Iterator<?> pit = tile.getImprovementFunctions()
+                    .getImprovementBuildingProblems(imp, ctx).iterator();
+            while (pit.hasNext()) {
+                Object o = pit.next();
+                if (o instanceof com.unciv.logic.map.tile.ImprovementBuildingProblem) {
+                    com.unciv.logic.map.tile.ImprovementBuildingProblem pr =
+                            (com.unciv.logic.map.tile.ImprovementBuildingProblem) o;
+                    if (pr.getReportable()) problems.add(pr.name());
+                }
+            }
+        } catch (Throwable ignored) { }
+        if (!problems.isEmpty())
+            throw new Fail("NOT_AVAILABLE", "这里造不了 " + imp.getName() + "：" + problems);
+
+        String before = tile.getImprovement();
+        tile.startWorkingOnImprovement(imp, actor, unit);
+        int turns = tile.getTurnsToImprovement();
+        events.add("{\"type\":\"improvement_started\",\"unit\":" + q("unit-" + unit.getId())
+                + ",\"improvement\":" + q(imp.getName())
+                + ",\"at\":[" + tile.getPosition().getX() + "," + tile.getPosition().getY() + "]"
+                + ",\"turns\":" + turns
+                + ",\"replaces\":" + (before == null ? "null" : q(before))
+                + ",\"note\":" + q("工人留在这格不动，每回合自己推进；走开或换活会丢进度") + "}");
+    }
+
+    private static void applyDisbandUnit(GameInfo gi, Civilization actor, String target, List<String> events) {
+        MapUnit unit = requireOwnUnit(gi, actor, target);
+        int id = unit.getId();
+        String name = unit.getName();
+        int upkeepBefore = actor.getStats().getStatsForNextTurn().getGold() == 0 ? 0 : 0;
+        unit.disband();
+        try { actor.updateStatsForNextTurn(); } catch (Throwable ignored) { }
+        events.add("{\"type\":\"disbanded\",\"unit\":" + q("unit-" + id)
+                + ",\"name\":" + q(name)
+                + ",\"gold\":" + actor.getGold() + "}");
     }
 
     /** 小地图边缘外 TileMap.get 会抛异常，统一收口。 */
@@ -577,11 +685,13 @@ public final class Kernel {
         } catch (Fail f) {
             throw f;
         } catch (Throwable ignored) { }
+        HexCoord from = unit.getTile().getPosition();
         if (!stayOnTile) Battle.INSTANCE.movePreparingAttack(attacker, hit, false);
         Battle.DamageDealt dmg = Battle.INSTANCE.attackOrNuke(attacker, hit);
         HexCoord at = unit.getTile().getPosition();
         events.add("{\"type\":\"attacked\",\"unit\":" + q("unit-" + unit.getId())
                 + ",\"target\":[" + x + "," + y + "]"
+                + ",\"from\":[" + from.getX() + "," + from.getY() + "]"
                 + ",\"at\":[" + at.getX() + "," + at.getY() + "]"
                 + ",\"damageDealt\":" + (dmg == null ? 0 : dmg.getAttackerDealt())
                 + ",\"damageTaken\":" + (dmg == null ? 0 : dmg.getDefenderDealt()) + "}");
@@ -617,6 +727,32 @@ public final class Kernel {
         } catch (IllegalArgumentException e) {
             throw new Fail("UNKNOWN_ACTION", "没有这个动作类型: " + action);
         }
+        // Automate 在引擎里只是个开关，真正的自动移动由客户端的 AutoPlayMenu 每回合驱动，
+        // headless 下没人跑。这里直接跑一遍自动化，把「打开开关」变成「这回合替我干活」。
+        if (type == UnitActionType.Automate) {
+            int x0 = unit.getTile().getPosition().getX();
+            int y0 = unit.getTile().getPosition().getY();
+            String impBefore = unit.getTile().getImprovementInProgress();
+            try {
+                com.unciv.view.GameView view = new com.unciv.view.GameView(gi, actor, false);
+                com.unciv.logic.automation.unit.UnitAutomation.INSTANCE.automateUnitMoves(
+                        view.getMapUnitView(unit), new com.unciv.logic.automation.civilization.AutomationCache());
+            } catch (Throwable e) {
+                throw new Fail("NOT_AVAILABLE", "自动行动失败: " + e.getMessage());
+            }
+            if (unit.isDestroyed() || unit.getTile() == null)
+                throw new Fail("NOT_AVAILABLE", "单位在自动行动中消失了（可能被吞并/解散）");
+            Tile now = unit.getTile();
+            String impAfter = now.getImprovementInProgress();
+            events.add("{\"type\":\"automated\",\"unit\":" + q("unit-" + unit.getId())
+                    + ",\"from\":[" + x0 + "," + y0 + "]"
+                    + ",\"at\":[" + now.getPosition().getX() + "," + now.getPosition().getY() + "]"
+                    + ",\"improvement\":" + (impAfter == null ? "null" : q(impAfter))
+                    + ",\"turns\":" + now.getTurnsToImprovement()
+                    + ",\"moves\":" + unit.getCurrentMovement() + "}");
+            return;
+        }
+
         boolean ok;
         try {
             ok = UnitActions.INSTANCE.invokeUnitAction(unit, type, actionId);
@@ -801,12 +937,14 @@ public final class Kernel {
         try {
             float gpt = actor.getStats().getStatsForNextTurn().getGold();
             int treasury = actor.getGold();
-            if (treasury < 0)
-                warnings.add("国库是负的（" + treasury + "），单位会被解散");
+            // 引擎只在国库 <= -200 且还在亏的时候解散军队（TurnManager.endTurn）
+            if (treasury <= -200)
+                warnings.add("国库 " + treasury + "，已经在解散军队来抵债了");
             else if (gpt < 0) {
-                int turnsLeft = (int) Math.floor(treasury / -gpt);
+                int turnsLeft = (int) Math.floor((treasury + 200) / -gpt);
                 warnings.add("每回合亏 " + round1(gpt) + " 金币，国库 " + treasury
-                        + "，大约 " + turnsLeft + " 回合后会被迫解散单位");
+                        + "，跌破 -200 才会解散军队"
+                        + (turnsLeft > 0 ? "，大约 " + turnsLeft + " 回合" : ""));
             }
         } catch (Throwable ignored) { }
         int pending = 0;
