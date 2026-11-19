@@ -42,6 +42,8 @@ Contents:
 | GET | `/targets` | `?unit` | attackable tiles with damage ranges |
 | GET | `/preview_move` | `?unit&x&y` | route, per-tile cost, turns, blockers; no state change |
 | GET | `/reachable` | `?unit` | every tile reachable this turn with its cost |
+| GET | `/stats` | — | per-cause gold/science/culture/faith, happiness, per-city yields |
+| GET | `/resources` | — | luxuries connected or not, strategic stock |
 | GET | `/isalive` | — | `{"online":true}` |
 | any | `/auth` | `Authorization: Basic` | `{"ok":true,"user":"<user>"}` |
 | GET | `/files/{name}` | — | raw bytes, `text/plain` |
@@ -195,7 +197,7 @@ candidates are there to be retried.
 
 ## Tool table
 
-50 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
+52 tools. `/tools` and MCP `tools/list` are generated from the same map, so this table cannot
 drift from the code.
 
 Read (`kind: read`) — these are not intents; call the HTTP route or the MCP tool:
@@ -220,6 +222,8 @@ Read (`kind: read`) — these are not intents; call the HTTP route or the MCP to
 | `get_targets` | `unit` | `GET /targets` |
 | `preview_move` | `unit`, `x`, `y` | `GET /preview_move` |
 | `get_reachable` | `unit` | `GET /reachable` |
+| `get_stats` | — | `GET /stats` |
+| `get_resources` | — | `GET /resources` |
 | `get_religion` | — | `GET /religion` |
 | `get_city_states` | — | `GET /citystates` |
 | `get_spies` | — | `GET /spies` |
@@ -275,7 +279,7 @@ Names are exact. `UNKNOWN_ID` returns up to 8 substring matches, so `Monu` sugge
 | `initialize` | `protocolVersion: "2025-06-18"`, `capabilities.tools`, `serverInfo: {name:"unciv-agent",version:"0.1.0"}` |
 | `notifications/initialized` | HTTP `202`, empty body |
 | `ping` | `{}` |
-| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 50 entries |
+| `tools/list` | `{tools:[{name,description,inputSchema}]}` — 52 entries |
 | `tools/call` | `{content:[{type:"text",text:"<tool JSON as a string>"}],isError:bool}` |
 | anything else | `-32601 Method not found` |
 
@@ -406,16 +410,32 @@ turn by turn, so `turnsToReach` is an estimate, not a promise — treat it as "a
 cannot enter the tile at all gets a route only if one exists; otherwise `turnsToReach` is `null`
 and `path` is empty.
 
-`goldBreakdown` and `happinessBreakdown` are the same per-cause tables the empire overview
-shows, straight from `getStatMapForNextTurn()` and `getHappinessBreakdown()`: `Unit upkeep`,
-`Transportation upkeep`, `Buildings`, `Tile yields`, `Trade`, city names, `Base happiness`,
-`Population`, `Cities`. Zero causes are dropped. This is how you tell a -14/turn from "too many
-units" apart from "too many buildings" without opening every city.
+The briefing is the dashboard, not the reference: it carries the numbers the top bar shows and
+stops there. Anything you would have to click into a screen for has its own route — `/stats` for
+the per-cause tables, `/resources` for resources, `/city/{id}` for one city's tiles, `/techs` for
+the tech list. Ask for them when a number looks wrong instead of paying for them every turn.
 
-`techsKnown` is everything already researched — `/techs` only lists what is available, which
-cannot answer "can I build a plantation yet". `luxuries.unconnected` lists luxury resources on
-tiles your cities can work that no improvement has connected yet, with the tile, so the fix is
-visible instead of inferred from a happiness number.
+`GET /stats` — the empire overview's Stats tab. `perTurn` gives the totals, `causes` splits them
+by source (`Unit upkeep`, `Transportation upkeep`, `Buildings`, `Tile yields`, `Trade`, city
+names), `happinessCauses` splits happiness (`Base happiness`, `Population`, `Cities`,
+`Luxury resources`, …), and `cities` gives each city's own yields. Zero causes are dropped, so a
+missing line means zero, not unknown.
+
+```json
+{"turn":12,"gold":31,
+ "perTurn":{"gold":5.0,"science":4.0,"culture":1.0,"faith":0.0,"happiness":13.0},
+ "causes":[{"cause":"Buildings","gold":3.0,"science":3.0,"culture":1.0},
+           {"cause":"Tile yields","gold":2.0}],
+ "happinessCauses":[{"cause":"Base happiness","value":15.0},
+                    {"cause":"Population","value":-0.4},{"cause":"Cities","value":-1.2}],
+ "cities":[{"name":"Persepolis","pop":1,"food":2.0,"production":5.0,"gold":5.0,
+            "science":4.0,"culture":1.0,"faith":0.0}]}
+```
+
+`GET /resources` — `{"luxuries":{"connected":[{name,count}],"unconnected":[{name,at,improvement}]},
+"strategic":[{name,count}]}`. `unconnected` lists luxury resources on tiles your cities can work
+that no improvement has connected yet, with the tile, so the missing improvement is visible
+instead of inferred from a happiness number.
 
 `GET /reachable?unit=` — every tile the unit can reach this turn, sorted by cost:
 `{"from":[x,y],"moves":2.0,"tiles":[{x,y,cost,terrain,city?,improvement?}],"count":N}`. This is the
@@ -458,12 +478,6 @@ prompt. It aggregates what the client would show:
  "culture":88,"culturePerTurn":3.0,"cultureForNextPolicy":45,
  "faith":12,"faithPerTurn":2.0,"happiness":4,
  "research":{"current":"Pottery","turnsLeft":3,"available":4},
- "goldBreakdown":[{"cause":"Buildings","gold":3.0},{"cause":"Tile yields","gold":2.0}],
- "happinessBreakdown":[{"cause":"Base happiness","value":15.0},
-                       {"cause":"Population","value":-0.4},{"cause":"Cities","value":-1.2}],
- "techsKnown":["Agriculture","Pottery",…],
- "luxuries":{"connected":[{"name":"Gems","count":1}],
-             "unconnected":[{"name":"Cotton","at":[5,0],"improvement":null}]},
  "cities":[{"id","name","pop","at","foodPerTurn","turnsToGrowth","production","turnsToBuild",
             "isPuppet","inResistance","health","canBombard","enemyAdjacent"}],
  "unitsNeedingOrders":[{"id","name","x","y","moves","military","civilian","canAttack","canPromote",
@@ -485,7 +499,8 @@ this turn, so nothing has to compute hex geometry. Both are capped, so use `get_
 city. `warnings` is the same list `end_turn` returns, so a model that reads the briefing can
 act before it loses a turn.
 
-`GET /techs` — `{"researching","sciencePerTurn","available":[{name,cost,remaining,turns}]}`.
+`GET /techs` — `{"researching","sciencePerTurn","available":[{name,cost,remaining,turns}],"researched":[...]}`.
+`researched` is what you already have, which is what answers "can I build a plantation yet".
 Only techs whose prerequisites are satisfied are listed. `remaining` accounts for science
 already invested, and `turns` is computed from it (`null` while science output is zero).
 

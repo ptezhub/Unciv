@@ -133,6 +133,10 @@ public final class Kernel {
                 "{\"type\":\"object\",\"properties\":{}}", "act");
         tool("preview_move", "移动预览：这条路线怎么走、每格代价、几回合到、到不了为什么。不改状态。",
                 "{\"type\":\"object\",\"properties\":{\"unit\":{\"type\":\"string\"},\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"}},\"required\":[\"unit\",\"x\",\"y\"]}", "read");
+        tool("get_stats", "帝国总览的 Stats 页：金币/科研/文化/信仰按来源拆开，加快乐拆解和逐城产出。",
+                "{\"type\":\"object\",\"properties\":{}}", "read");
+        tool("get_resources", "资源总览：奢侈品哪些连上了、领地里还有哪些没连，战略资源存量。",
+                "{\"type\":\"object\",\"properties\":{}}", "read");
         tool("get_reachable", "这个单位这回合能走到的所有格子，带总代价。",
                 "{\"type\":\"object\",\"properties\":{\"unit\":{\"type\":\"string\"}},\"required\":[\"unit\"]}", "read");
         tool("get_targets", "这个单位这回合能打的所有目标格，附双向伤害区间。",
@@ -1794,6 +1798,8 @@ public final class Kernel {
             case "preview_move": return Agent.previewMoveJson(gameInfo, actor, Json.str(args, "unit"),
                     Json.integer(args, "x"), Json.integer(args, "y"));
             case "get_reachable": return Agent.reachableJson(gameInfo, actor, Json.str(args, "unit"));
+            case "get_stats": return Agent.statsJson(gameInfo, actor);
+            case "get_resources": return Agent.resourcesJson(gameInfo, actor);
             case "preview_attack": return Agent.previewAttackJson(gameInfo, actor,
                     Json.str(args, "unit"), Json.str(args, "city"),
                     Json.integer(args, "x"), Json.integer(args, "y"));

@@ -314,6 +314,8 @@ public class Agent {
             if (path.equals("/religion")) { send(ex, 200, religionJson(need(), actor)); return; }
             if (path.equals("/techs")) { send(ex, 200, techsJson(need(), actor)); return; }
             if (path.equals("/briefing")) { send(ex, 200, briefingJson(need(), actor)); return; }
+            if (path.equals("/stats")) { send(ex, 200, statsJson(need(), actor)); return; }
+            if (path.equals("/resources")) { send(ex, 200, resourcesJson(need(), actor)); return; }
             if (path.equals("/preview_move")) {
                 send(ex, 200, previewMoveJson(need(), actor, query(ex, "unit"),
                         intq(ex, "x"), intq(ex, "y")));
@@ -444,6 +446,7 @@ public class Agent {
                 || path.equals("/techs") || path.equals("/victory") || path.equals("/briefing")
                 || path.equals("/preview_attack") || path.equals("/targets")
                 || path.equals("/preview_move") || path.equals("/reachable")
+                || path.equals("/stats") || path.equals("/resources")
                 || path.equals("/tile")
                 || path.startsWith("/city/") || path.equals("/actions")
                 || path.equals("/act") || path.equals("/move") || path.equals("/endturn");
@@ -1271,93 +1274,6 @@ public class Agent {
         }
         sb.append(']');
 
-        // 金币与快乐的逐项来源：UI 的 Stats 页就是这张表
-        sb.append(",\"goldBreakdown\":[");
-        try {
-            com.unciv.models.stats.StatMap statMap = c.getStats().getStatMapForNextTurn();
-            boolean firstGold = true;
-            for (Map.Entry<String, com.unciv.models.stats.Stats> e : statMap.entrySet()) {
-                float g = e.getValue().getGold();
-                if (Math.abs(g) < 0.05f) continue;
-                if (!firstGold) sb.append(',');
-                firstGold = false;
-                sb.append("{\"cause\":").append(quote(e.getKey()))
-                  .append(",\"gold\":").append(round1(g)).append('}');
-            }
-        } catch (Throwable ignored) { }
-        sb.append(']');
-        sb.append(",\"happinessBreakdown\":[");
-        try {
-            java.util.HashMap<String, Float> hb = c.getStats().getHappinessBreakdown();
-            boolean firstHap = true;
-            for (Map.Entry<String, Float> e : hb.entrySet()) {
-                if (Math.abs(e.getValue()) < 0.05f) continue;
-                if (!firstHap) sb.append(',');
-                firstHap = false;
-                sb.append("{\"cause\":").append(quote(e.getKey()))
-                  .append(",\"value\":").append(round1(e.getValue())).append('}');
-            }
-        } catch (Throwable ignored) { }
-        sb.append(']');
-
-        // 已研究的科技：/techs 只列可研究的，回答不了「我会不会造种植园」
-        sb.append(",\"techsKnown\":[");
-        boolean firstTech = true;
-        try {
-            java.util.List<String> known = new java.util.ArrayList<>(c.getTech().getTechsResearched());
-            java.util.Collections.sort(known);
-            for (String t : known) {
-                if (!firstTech) sb.append(',');
-                firstTech = false;
-                sb.append(quote(t));
-            }
-        } catch (Throwable ignored) { }
-        sb.append(']');
-
-        // 奢侈品：连上了几份、领地里还有哪些没连
-        sb.append(",\"luxuries\":{\"connected\":[");
-        try {
-            java.util.HashMap<String, Integer> amounts = c.getCivResourcesByName();
-            java.util.LinkedHashMap<String, Integer> lux = new java.util.LinkedHashMap<>();
-            for (com.unciv.models.ruleset.tile.TileResource r : gi.getRuleset().getTileResources().values()) {
-                if (r.getResourceType() != com.unciv.models.ruleset.tile.ResourceType.Luxury) continue;
-                int n = amounts.getOrDefault(r.getName(), 0);
-                if (n > 0) lux.put(r.getName(), n);
-            }
-            boolean firstLux = true;
-            for (Map.Entry<String, Integer> e : lux.entrySet()) {
-                if (!firstLux) sb.append(',');
-                firstLux = false;
-                sb.append("{\"name\":").append(quote(e.getKey()))
-                  .append(",\"count\":").append(e.getValue()).append('}');
-            }
-            sb.append("],\"unconnected\":[");
-            boolean firstUn = true;
-            java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
-            for (City city : c.getCities()) {
-                Iterator<Tile> tit = city.getWorkableTiles().iterator();
-                while (tit.hasNext()) {
-                    Tile t = tit.next();
-                    String res = t.getResource();
-                    if (res == null) continue;
-                    com.unciv.models.ruleset.tile.TileResource tr = gi.getRuleset().getTileResources().get(res);
-                    if (tr == null || tr.getResourceType() != com.unciv.models.ruleset.tile.ResourceType.Luxury) continue;
-                    if (amounts.getOrDefault(res, 0) > 0) continue;
-                    if (!seen.add(res)) continue;
-                    if (!firstUn) sb.append(',');
-                    firstUn = false;
-                    sb.append("{\"name\":").append(quote(res))
-                      .append(",\"at\":[").append(t.getPosition().getX()).append(',')
-                      .append(t.getPosition().getY()).append(']')
-                      .append(",\"improvement\":").append(t.getImprovement() == null
-                              ? "null" : quote(t.getImprovement()))
-                      .append('}');
-                }
-            }
-            sb.append(']');
-        } catch (Throwable ignored) { sb.append(']'); }
-        sb.append('}');
-
         // 需要操作的单位
         sb.append(",\"unitsNeedingOrders\":[");
         boolean firstUnit = true;
@@ -1665,6 +1581,130 @@ public class Agent {
                 + ",\"attackerHp\":" + attackerHp
                 + ",\"wouldKillDefender\":" + (defMax >= defenderHp)
                 + ",\"wouldKillAttacker\":" + (atkMax >= attackerHp) + "}";
+    }
+
+    /** 帝国总览的 Stats 页：金币/科研/文化/信仰按来源拆开，加快乐拆解。 */
+    static String statsJson(GameInfo gi, Civilization c) {
+        StringBuilder sb = new StringBuilder("{\"turn\":").append(gi.getTurns())
+                .append(",\"gold\":").append(c.getGold())
+                .append(",\"perTurn\":{");
+        try {
+            com.unciv.models.stats.StatMap statMap = c.getStats().getStatMapForNextTurn();
+            com.unciv.models.stats.Stats total = new com.unciv.models.stats.Stats();
+            for (com.unciv.models.stats.Stats st : statMap.values()) total.add(st);
+            sb.append("\"gold\":").append(round1(total.getGold()))
+              .append(",\"science\":").append(round1(total.getScience()))
+              .append(",\"culture\":").append(round1(total.getCulture()))
+              .append(",\"faith\":").append(round1(total.getFaith()))
+              .append(",\"happiness\":").append(round1(c.getHappiness()));
+            sb.append("},\"causes\":[");
+            boolean first = true;
+            for (Map.Entry<String, com.unciv.models.stats.Stats> e : statMap.entrySet()) {
+                com.unciv.models.stats.Stats st = e.getValue();
+                boolean any = Math.abs(st.getGold()) > 0.05f || Math.abs(st.getScience()) > 0.05f
+                        || Math.abs(st.getCulture()) > 0.05f || Math.abs(st.getFaith()) > 0.05f;
+                if (!any) continue;
+                if (!first) sb.append(',');
+                first = false;
+                sb.append("{\"cause\":").append(quote(e.getKey()));
+                if (Math.abs(st.getGold()) > 0.05f) sb.append(",\"gold\":").append(round1(st.getGold()));
+                if (Math.abs(st.getScience()) > 0.05f) sb.append(",\"science\":").append(round1(st.getScience()));
+                if (Math.abs(st.getCulture()) > 0.05f) sb.append(",\"culture\":").append(round1(st.getCulture()));
+                if (Math.abs(st.getFaith()) > 0.05f) sb.append(",\"faith\":").append(round1(st.getFaith()));
+                sb.append('}');
+            }
+            sb.append(']');
+        } catch (Throwable ignored) { sb.append("}, \"causes\":[]"); }
+        sb.append(",\"happinessCauses\":[");
+        try {
+            java.util.HashMap<String, Float> hb = c.getStats().getHappinessBreakdown();
+            boolean first = true;
+            for (Map.Entry<String, Float> e : hb.entrySet()) {
+                if (Math.abs(e.getValue()) < 0.05f) continue;
+                if (!first) sb.append(',');
+                first = false;
+                sb.append("{\"cause\":").append(quote(e.getKey()))
+                  .append(",\"value\":").append(round1(e.getValue())).append('}');
+            }
+        } catch (Throwable ignored) { }
+        sb.append(']');
+        // 城市一级的产出，UI 的城市列表也是这么排的
+        sb.append(",\"cities\":[");
+        boolean firstCity = true;
+        for (City city : c.getCities()) {
+            if (!firstCity) sb.append(',');
+            firstCity = false;
+            com.unciv.models.stats.Stats st = city.getCityStats().getCurrentCityStats();
+            sb.append("{\"name\":").append(quote(city.getName()))
+              .append(",\"pop\":").append(city.getPopulation().getPopulation())
+              .append(",\"food\":").append(round1(st.getFood()))
+              .append(",\"production\":").append(round1(st.getProduction()))
+              .append(",\"gold\":").append(round1(st.getGold()))
+              .append(",\"science\":").append(round1(st.getScience()))
+              .append(",\"culture\":").append(round1(st.getCulture()))
+              .append(",\"faith\":").append(round1(st.getFaith()))
+              .append('}');
+        }
+        return sb.append("]}").toString();
+    }
+
+    /** 资源总览：奢侈品连没连、战略资源有多少。对应 UI 的 Resources 页。 */
+    static String resourcesJson(GameInfo gi, Civilization c) {
+        StringBuilder sb = new StringBuilder("{\"luxuries\":{\"connected\":[");
+        java.util.HashMap<String, Integer> amounts;
+        try { amounts = c.getCivResourcesByName(); } catch (Throwable e) { amounts = new java.util.HashMap<>(); }
+        boolean first = true;
+        try {
+            for (com.unciv.models.ruleset.tile.TileResource r : gi.getRuleset().getTileResources().values()) {
+                if (r.getResourceType() != com.unciv.models.ruleset.tile.ResourceType.Luxury) continue;
+                int n = amounts.getOrDefault(r.getName(), 0);
+                if (n <= 0) continue;
+                if (!first) sb.append(',');
+                first = false;
+                sb.append("{\"name\":").append(quote(r.getName()))
+                  .append(",\"count\":").append(n).append('}');
+            }
+        } catch (Throwable ignored) { }
+        sb.append("],\"unconnected\":[");
+        first = true;
+        java.util.LinkedHashSet<String> seen = new java.util.LinkedHashSet<>();
+        try {
+            for (City city : c.getCities()) {
+                Iterator<Tile> tit = city.getWorkableTiles().iterator();
+                while (tit.hasNext()) {
+                    Tile t = tit.next();
+                    String res = t.getResource();
+                    if (res == null) continue;
+                    com.unciv.models.ruleset.tile.TileResource tr = gi.getRuleset().getTileResources().get(res);
+                    if (tr == null || tr.getResourceType() != com.unciv.models.ruleset.tile.ResourceType.Luxury) continue;
+                    if (amounts.getOrDefault(res, 0) > 0) continue;
+                    if (!seen.add(res)) continue;
+                    if (!first) sb.append(',');
+                    first = false;
+                    sb.append("{\"name\":").append(quote(res))
+                      .append(",\"at\":[").append(t.getPosition().getX()).append(',')
+                      .append(t.getPosition().getY()).append(']')
+                      .append(",\"improvement\":").append(t.getImprovement() == null
+                              ? "null" : quote(t.getImprovement()))
+                      .append('}');
+                }
+            }
+        } catch (Throwable ignored) { }
+        sb.append("]},\"strategic\":[");
+        first = true;
+        try {
+            for (com.unciv.models.ruleset.tile.TileResource r : gi.getRuleset().getTileResources().values()) {
+                if (r.getResourceType() != com.unciv.models.ruleset.tile.ResourceType.Strategic) continue;
+                int n = amounts.getOrDefault(r.getName(), 0);
+                if (n <= 0) continue;
+                if (!first) sb.append(',');
+                first = false;
+                sb.append("{\"name\":").append(quote(r.getName()))
+                  .append(",\"count\":").append(n).append('}');
+            }
+        } catch (Throwable ignored) { }
+        sb.append("]}");
+        return sb.toString();
     }
 
     /** 移动预览：一条路线、每格代价、几回合到、到不了为什么。只读，不消耗移动力。 */
@@ -1989,6 +2029,17 @@ public class Agent {
                   .append(",\"turns\":").append(perTurn <= 0.01 ? "null"
                           : String.valueOf((int) Math.ceil(remaining / perTurn)))
                   .append('}');
+            }
+        } catch (Throwable ignored) { }
+        sb.append("],\"researched\":[");
+        boolean firstDone = true;
+        try {
+            java.util.List<String> known = new java.util.ArrayList<>(c.getTech().getTechsResearched());
+            java.util.Collections.sort(known);
+            for (String t : known) {
+                if (!firstDone) sb.append(',');
+                firstDone = false;
+                sb.append(quote(t));
             }
         } catch (Throwable ignored) { }
         return sb.append("]}").toString();
