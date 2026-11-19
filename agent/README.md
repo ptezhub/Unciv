@@ -31,6 +31,26 @@ legacy `/act` and `/move` shims, and MCP `tools/call` all funnel into `Kernel.ha
 so the three surfaces cannot drift apart. Reads go straight to projection functions on
 `Agent` and never touch the kernel.
 
+## What gets exposed
+
+One rule decides whether a piece of state belongs in the API: **does the game's own UI show it?**
+
+If a human playing the client can see it — the top bar, the unit panel, the city screen, the empire
+overview, the tile tooltip, the battle preview, the movement overlay — then an agent should be able
+to read it, and it should be reachable from a route that mirrors the screen it lives on. If the UI
+does not show it, it stays out. That keeps the surface honest in both directions: no invented
+predictions, no reimplementation of engine rules that will drift, and nothing that gives an agent
+information a person at the same game would not have.
+
+Two consequences worth spelling out:
+
+- Screens you have to click into are separate routes, not fields stuffed into `/briefing`. The
+  briefing carries what the top bar carries; the Stats page is `/stats`, the resource list is
+  `/resources`, one city's tiles are `/city/{id}`.
+- Expensive or irreversible actions get a read-only preview of the same shape as the action
+  (`preview_attack`, `preview_move`, `preview_city_site`), because the client shows that preview
+  before you commit, and because being wrong costs turns.
+
 ## Build
 
 ```
