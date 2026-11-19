@@ -7,9 +7,8 @@ plugins {
 
 sourceSets {
     main {
-        // src-java holds the current host (plain Java, no Kotlin needed).
-        // src/ holds the first single-civ prototype; it is not part of the build.
-        java.srcDir("src-java")
+        // The host is all Kotlin under src-kotlin/. src/ holds the first single-civ
+        // prototype and is not part of the build.
     }
 }
 

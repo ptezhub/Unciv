@@ -13,12 +13,18 @@ runs the game, and `ConsoleLauncher` is a fixed AI-vs-AI balance harness.
 
 ```
 agent/
-  src-java/uncivagent/Agent.java   HTTP routing, identity/tokens, read projections, /new /load /save
-  src-java/uncivagent/Kernel.java  intent validation + apply, tool table, MCP adapter
-  src-java/uncivagent/Json.java    ~140-line JSON reader (no dependencies)
+  src-kotlin/uncivagent/Agent.kt   HTTP routing, identity/tokens, read projections, /new /load /save
+  src-kotlin/uncivagent/Kernel.kt  intent validation + apply, tool table, MCP adapter
+  src-kotlin/uncivagent/Json.kt    ~220-line JSON reader (no dependencies)
+  build.sh                         local build: kotlinc then javac, no gradle needed
   src/Main.kt                      first single-civ prototype; superseded, not compiled
   docs/PROTOCOL.md                 routes, intent shape, error codes, MCP, file sync
 ```
+
+Everything is Kotlin now. That is not cosmetic: the engine is Kotlin, and calling it from
+Java meant spelling out default arguments by hand — `getDistanceToTiles(true, null, null,
+true)` — which drifted from the engine's own defaults once and cost a game 30 turns. In
+Kotlin the same call is `unit.movement.getDistanceToTiles()` and follows the engine.
 
 `Kernel` is the only place that mutates game state for agent requests. HTTP `/intent`, the
 legacy `/act` and `/move` shims, and MCP `tools/call` all funnel into `Kernel.handleIntent`,
@@ -26,6 +32,17 @@ so the three surfaces cannot drift apart. Reads go straight to projection functi
 `Agent` and never touch the kernel.
 
 ## Build
+
+```
+./agent/build.sh
+```
+
+That is the whole build: `kotlinc` over `src-kotlin/`, then `javac` if any Java is left
+(there is none). It uses the Kotlin compiler and stdlib already in the Gradle cache, so it
+works offline. Output goes to `agent-classes/`.
+
+The Gradle path below still exists for a full distribution, but it is not needed day to day
+and its wrapper cannot fetch a distribution on this machine:
 
 ```
 ./gradlew :agent:installDist
