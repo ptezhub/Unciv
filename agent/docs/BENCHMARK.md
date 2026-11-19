@@ -131,6 +131,11 @@ The conformance suite scores the interface. A played game is scored separately, 
 `/briefing` (or the `play_smoke` metrics block). The gate comes first: if `harness_errors` is
 non-empty the run is void — that is the harness, not the model.
 
+Reproducibility caveat: the same `seed` does **not** produce the same map in a different
+process — upstream behaves that way, and two `/new {"seed":N}` calls in one process already
+differ. A benchmark that must be comparable across runs has to start from a saved game
+(`POST /load`), not from a seed.
+
 Everything else is normalised against a reference line for the difficulty and turn count, then
 weighted:
 
