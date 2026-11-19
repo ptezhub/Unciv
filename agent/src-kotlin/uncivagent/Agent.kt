@@ -303,6 +303,17 @@ object Agent {
                 return
             }
 
+            // 给某个 playerId 预置旁观文明：客户端按 ID 进来时直接匹配上，
+            // 不用依赖它自己调 getSpectator（各版本行为不完全一致）。
+            if (path == "/admin/spectator" && method == "POST") {
+                val b = obj(parse(readBody(ex)))
+                val pid = str(b, "playerId")
+                if (pid == null || pid.isBlank()) { send(ex, 400, err("需要 playerId")); return }
+                val sp = need().getSpectator(pid)
+                publishSync(need())
+                send(ex, 200, """{"ok":true,"civ":${quote(sp.civName)},"playerId":${quote(pid)}}""")
+                return
+            }
             if (path == "/admin/civs") {
                 val sb = StringBuilder("""{"turn":""").append(need().turns).append(""","civs":[""")
                 var firstCiv = true
