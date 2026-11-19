@@ -62,6 +62,10 @@ object Agent {
     /** token -> 文明名 */
     private val tokenToCiv = LinkedHashMap<String, String>()
 
+    /** 和官方客户端联机用的同步文件（/files/<name>）。
+     *  设了它，回合推进后自动把当前存档写出去；客户端 PUT 回来则尝试接管。 */
+    private val syncName: String? = System.getenv("UNCIV_AGENT_SYNC")?.takeIf { it.isNotBlank() }
+
     /** 本回合已提交的文明名 */
     private val submitted = LinkedHashSet<String>()
 
@@ -149,6 +153,48 @@ object Agent {
             gi.currentPlayerCiv.updateStatsForNextTurn()
         } catch (ignored: Throwable) { }
         System.out.println("[unciv-agent] 载入存档 $path 回合 " + gi.turns)
+        publishSync(gi)
+    }
+
+    /** 把当前对局写成同步文件，供官方客户端拉取。写临时文件再 rename，避免读到半个文件。 */
+    private fun publishSync(gi: GameInfo) {
+        val name = syncName ?: return
+        try {
+            val dir = fileRoot
+            if (!dir.exists()) dir.mkdirs()
+            val target = File(dir, name)
+            val tmp = File(dir, "$name.tmp")
+            FileConversions.writeJson(FileHandle(tmp), gi, false)
+            if (!tmp.renameTo(target)) {
+                // 跨文件系统时 rename 会失败，退回覆盖写
+                target.delete()
+                tmp.renameTo(target)
+            }
+        } catch (t: Throwable) {
+            System.out.println("[unciv-agent] 发布同步文件失败: " + t.message)
+        }
+    }
+
+    /** 客户端上传了同步文件：读得出来且回合不比我们旧，就接管。 */
+    private fun ingestSync(file: File) {
+        val name = syncName ?: return
+        if (file.name != name) return
+        try {
+            val incoming = FileConversions.readJson(FileHandle(file), GameInfo::class.java) ?: return
+            val current = gameInfo
+            if (current != null && incoming.turns < current.turns) {
+                System.out.println("[unciv-agent] 收到旧存档（${incoming.turns} < ${current.turns}），忽略")
+                return
+            }
+            incoming.setTransients()
+            gameInfo = incoming
+            game.gameInfo = incoming
+            submitted.clear()
+            try { incoming.currentPlayerCiv.updateStatsForNextTurn() } catch (ignored: Throwable) { }
+            System.out.println("[unciv-agent] 接管客户端上传的存档，回合 " + incoming.turns)
+        } catch (t: Throwable) {
+            System.out.println("[unciv-agent] 上传的存档读不出来，保持原状: " + t.message)
+        }
     }
 
     // ---------------- 身份 ----------------
@@ -192,9 +238,12 @@ object Agent {
             val humans = humanCivs(gi)
             if (humans.size <= 1) {
                 gi.nextTurn(null, false)
+                publishSync(gi)
                 return
             }
             submitted.add(actor.civName)
+            // 交了就发布，客户端轮询文件时能看到最新状态（哪怕还在等别人）
+            publishSync(gi)
             for (h in humans) {
                 if (!submitted.contains(h.civName)) return   // 还有人没交，等
             }
@@ -206,6 +255,7 @@ object Agent {
                 gi.nextTurn(null, false)
                 guard++
             } while (guard < 64 && (gi.turns == before || !gi.currentPlayerCiv.isHuman()))
+            publishSync(gi)
         }
     }
 
@@ -496,6 +546,7 @@ object Agent {
                 val data = ex.getRequestBody().readAllBytes()
                 if (data.size > 32 * 1024 * 1024) { send(ex, 413, err("文件太大")); return }
                 Files.write(f.toPath(), data)
+                if (name == syncName) ingestSync(f)
                 send(ex, 200, """{"ok":true,"name":${Kernel.q(name)},"bytes":${data.size}}""")
                 return
             }

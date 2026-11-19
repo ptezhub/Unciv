@@ -84,6 +84,7 @@ UNCIV_AGENT_SAVE=/abs/path/to/game.json \
 | `UNCIV_AGENT_PORT` | `8099` | listen port, all interfaces |
 | `UNCIV_AGENT_FILES` | `/home/node/.openclaw/state/unciv-host/files` | directory behind `/files/{name}`; created on boot |
 | `UNCIV_AGENT_SAVE` | unset | save to load at boot; without it the host waits for `POST /load` or `POST /new` |
+| `UNCIV_AGENT_SYNC` | unset | file name under `UNCIV_AGENT_FILES` for client handoff: published after every submission, reloaded when a client `PUT`s it back |
 
 Quick check:
 
