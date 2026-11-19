@@ -45,6 +45,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
+import kotlin.concurrent.withLock
 
 /**
  * Unciv 权威宿主。
@@ -91,9 +92,11 @@ object Agent {
         // 游戏状态仍是单线程语义：除 /events_stream 外，所有请求都在 STATE_LOCK 里串行处理。
         server.createContext("/") { ex ->
             if (ex.requestURI.path == STREAM_PATH) handleStream(ex)
-            else synchronized(STATE_LOCK) { handle(ex) }
+            else STATE_LOCK.withLock { handle(ex) }
         }
-        server.setExecutor(Executors.newCachedThreadPool())
+        // 虚拟线程：每条推送连接都阻塞着，用平台线程就是一条连接一个 OS 线程。
+        // JDK 21 的虚拟线程让阻塞变成几乎不占资源的事，连接数不再受线程数限制。
+        server.setExecutor(Executors.newVirtualThreadPerTaskExecutor())
         server.start()
         System.out.println("[unciv-agent] listening on 0.0.0.0:" + port +
             " cwd=" + File(".").getAbsolutePath() +
@@ -198,7 +201,7 @@ object Agent {
     // 慢客户端和半死连接不会卡住宿主的发布路径（队列满了就当它掉线）。
 
     private const val STREAM_PATH = "/events_stream"
-    private val STATE_LOCK = Any()
+    private val STATE_LOCK = java.util.concurrent.locks.ReentrantLock()
     private val subscribers = java.util.concurrent.CopyOnWriteArrayList<Subscriber>()
 
     @Volatile
@@ -210,7 +213,7 @@ object Agent {
         @Volatile
         var alive = true
 
-        val writer = Thread {
+        val writer = Thread.ofVirtual().name("sse-writer").unstarted {
             try {
                 val out = ex.responseBody
                 while (alive) {
@@ -273,7 +276,6 @@ object Agent {
         subscribers.add(sub)
         // 先给一条 hello，客户端不用等下一次发布就知道当前版本
         sub.queue.offer("retry: 3000\n" + updateEvent(gameInfo))
-        sub.writer.isDaemon = true
         sub.writer.start()
         System.out.println("[unciv-agent] sse subscriber +1, now " + subscribers.size)
 
